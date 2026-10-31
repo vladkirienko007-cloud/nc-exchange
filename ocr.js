@@ -276,7 +276,7 @@ export function parse(text, known = []) {
     };
   }
 
-  return { assets: [...assets.values()], indices, economy, current, company };
+  return { assets: [...assets.values()], indices, economy, current, company, lines };
 }
 
 // Свести результаты нескольких проходов. Где проходы расходятся — берём
@@ -302,6 +302,20 @@ export function merge(results, known = {}) {
   // Новые активы (с названием) группируем по похожему названию: в разных проходах
   // тикер одной и той же акции может прочитаться по-разному (TRIG и CT).
   const all = results.flatMap(r => r.assets);
+  // Акции или крипта на всём скриншоте: по подписям под названиями ("BTC · Крипто").
+  // Строку вкладок "Акции  Крипто" не считаем — там есть оба слова.
+  const typed = all.filter(x => x.type);
+  let pageType = null;
+  const nCrypto = typed.filter(x => x.type === 'crypto').length, nStock = typed.length - nCrypto;
+  if (nCrypto > nStock) pageType = 'crypto';
+  else if (nStock > nCrypto) pageType = 'stock';
+  else {
+    const lines = results.flatMap(r => r.lines || []);
+    const c = lines.filter(l => /Крипт|Kpunt/i.test(l) && !/Акци/i.test(l)).length;
+    const s = lines.filter(l => /Акци/i.test(l) && !/Крипт|Kpunt/i.test(l)).length;
+    pageType = c > s ? 'crypto' : s > c ? 'stock' : null;
+  }
+  for (const x of all) if (!x.type && pageType) x.type = pageType;
   const current = results.map(r => r.current).find(Boolean);
   if (current) for (const r of results) if (r.company) all.push({ ticker: current, ...r.company });
   const clusters = [];
@@ -357,7 +371,7 @@ export function merge(results, known = {}) {
     for (const k of ['status', 'demand', 'costs']) economy[k] = econs.map(e => e[k]).find(v => v != null) ?? null;
     if (economy.status == null && economy.demand == null && economy.costs == null) economy = null;
   }
-  return { assets: out, indices, economy };
+  return { assets: out, indices, economy, pageType };
 }
 
 export const _debug = { preprocess, getWorker };

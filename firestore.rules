@@ -18,6 +18,7 @@ service cloud.firestore {
       allow get: if signedIn();
       allow create: if signedIn() && request.resource.data.owner == request.auth.uid;
       allow update: if isMember(g);
+      allow delete: if isOwner(g);
 
       match /members/{uid} {
         allow read: if isMember(g) || (signedIn() && uid == request.auth.uid);

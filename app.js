@@ -12,6 +12,7 @@ const S = {
   filter: lsGet('ncx-filter', 'all'),
   favs: new Set(lsGet('ncx-favs', [])),
   range: '24h',
+  selecting: false, sel: new Set(),
 };
 let store;
 let unsubs = [];
@@ -134,7 +135,15 @@ function viewMarket() {
         <div class="lbl">${econ.demand != null ? 'спрос ' + U.pct(econ.demand) : ''}${econ.costs != null ? ' · расходы ' + U.pct(econ.costs) : ''}</div></div>` : ''}
       ${idx.map(i => `<div class="panel"><div class="lbl">${esc(i.code)}</div><div class="val num">${U.plain(i.value)} <span class="small ${U.cls(i.change)}">${U.pct(i.change)}</span></div></div>`).join('')}
     </div>` : ''}
-    <div class="chips">${chip('all', 'Все')}${chip('stock', 'Акции')}${chip('crypto', 'Крипто')}${chip('fav', '<i class="ti ti-star"></i> Избранное')}${chip('under', 'Недооценённые')}</div>
+    <div class="chips">${chip('all', 'Все')}${chip('stock', 'Акции')}${chip('crypto', 'Крипто')}${chip('fav', '<i class="ti ti-star"></i> Избранное')}${chip('under', 'Недооценённые')}
+      ${isOwner() && list.length && !S.selecting ? '<button class="chip" data-act="select-mode" style="margin-left:auto"><i class="ti ti-checkbox"></i> Выбрать</button>' : ''}</div>
+    ${S.selecting ? `<div class="banner" style="background:var(--panel2);color:var(--text)">
+      <span>Выбрано: ${S.sel.size}</span>
+      <span style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn" data-act="select-all">${list.every(a => S.sel.has(a.ticker)) ? 'Снять все' : 'Выбрать все'}</button>
+        <button class="btn danger" data-act="delete-selected"><i class="ti ti-trash"></i>Удалить</button>
+        <button class="btn ghost" data-act="select-cancel">Отмена</button>
+      </span></div>` : ''}
     <div class="panel market">
       <div class="row head"><span>Актив</span><span>Цена</span><span>Изм.</span><span>Фунд. цена</span><span>Тренд</span><span>Обновил</span><span></span></div>
       ${list.length ? list.map(assetRow).join('') : `<div class="empty">${S.filter === 'under' ? 'Нет акций дешевле фундаментальной цены.' : 'Здесь пока пусто. Распознай скриншот биржи или внеси цены вручную.'}</div>`}
@@ -151,14 +160,17 @@ function assetRow(a) {
   const alert = S.alerts[a.ticker];
   const hit = alertHit(a, alert);
   const stale = a.updatedAt && Date.now() - a.updatedAt > U.STALE_MS;
-  return `<div class="row ${hit ? 'alerted' : d > 0 ? 'under' : ''}" data-act="open" data-t="${esc(a.ticker)}">
+  const sel = S.selecting && S.sel.has(a.ticker);
+  return `<div class="row ${sel ? 'selected' : hit ? 'alerted' : d > 0 ? 'under' : ''}" data-act="${S.selecting ? 'toggle-sel' : 'open'}" data-t="${esc(a.ticker)}">
     <div class="asset-name">${tileFor(a)}<div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${esc(a.ticker)} · ${a.type === 'crypto' ? 'Крипто' : 'Акции'} ${alert ? '<i class="ti ti-bell warn"></i>' : ''}</div></div></div>
     <div class="price num c-price">${U.money(a.price)}</div>
     <div class="num c-change ${U.cls(a.change)}">${U.pct(a.change)}</div>
     <div class="num c-fund">${a.fundamental ? U.money(a.fundamental) + `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'ниже на ' + U.pct(d, false) : 'выше на ' + U.pct(-d, false)}</div>` : '<span class="muted">—</span>'}</div>
     <div class="c-spark">${spark(a.spark)}</div>
     <div class="small c-who ${hit ? 'warn' : stale ? 'warn' : 'muted'}">${hit ? hitText(alert, a) : a.updatedAt ? esc(a.updatedBy) + ' · ' + U.ago(a.updatedAt) + (stale ? ' · устарело' : '') : 'нет цены'}</div>
-    <button class="star c-star ${S.favs.has(a.ticker) ? 'on' : ''}" data-act="fav" data-t="${esc(a.ticker)}" aria-label="В избранное"><i class="ti ti-star"></i></button>
+    ${S.selecting
+      ? `<span class="star c-star sel-box ${sel ? 'on' : ''}"><i class="ti ti-${sel ? 'square-check' : 'square'}"></i></span>`
+      : `<button class="star c-star ${S.favs.has(a.ticker) ? 'on' : ''}" data-act="fav" data-t="${esc(a.ticker)}" aria-label="В избранное"><i class="ti ti-star"></i></button>`}
   </div>`;
 }
 
@@ -211,6 +223,7 @@ function viewAsset(t) {
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button class="btn" data-act="price-one" data-t="${esc(t)}"><i class="ti ti-edit"></i>Новая цена</button>
           <button class="btn" data-act="edit-asset" data-t="${esc(t)}"><i class="ti ti-building"></i>Данные компании</button>
+          ${isOwner() ? `<button class="btn danger" data-act="delete-asset" data-t="${esc(t)}"><i class="ti ti-trash"></i>Удалить</button>` : ''}
         </div>
       </div>
     </div>
@@ -375,11 +388,46 @@ function viewGroup() {
         <div class="field"><label>Ник в таблице</label><div style="display:flex;gap:8px"><input class="input" id="myname" value="${esc(me ? me.name : S.user.name)}" maxlength="24"><button class="btn" data-act="rename">Сохранить</button></div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn" data-act="notify"><i class="ti ti-bell"></i>Уведомления</button>
-          ${DEMO ? '' : '<button class="btn danger" data-act="signout"><i class="ti ti-logout"></i>Выйти</button>'}
+          ${DEMO ? '' : '<button class="btn" data-act="signout"><i class="ti ti-logout"></i>Выйти из аккаунта</button>'}
         </div>
+      </div>
+      <div class="panel pad" style="margin-top:14px;border-color:#4a2330">
+        <h2>${isOwner() ? 'Удалить группу' : 'Выйти из группы'}</h2>
+        <div class="hint" style="margin-bottom:10px">${isOwner()
+          ? 'Удалятся все активы, история цен и индексы группы, а участники потеряют к ней доступ. Портфели участников останутся у них. Вернуть нельзя.'
+          : 'Ты перестанешь видеть общую таблицу. Чтобы вернуться, понадобится новая заявка.'}</div>
+        <button class="btn danger" data-act="${isOwner() ? 'delete-group' : 'exit-group'}"><i class="ti ti-${isOwner() ? 'trash' : 'door-exit'}"></i>${isOwner() ? 'Удалить группу' : 'Выйти из группы'}</button>
       </div>
     </div>
   </div>`;
+}
+
+function openDeleteGroup() {
+  const close = modal('Удалить группу', `
+    <div class="hint" style="margin-bottom:12px">Это удалит группу «${esc(S.group.name)}» у всех участников вместе с ценами и историей. Чтобы подтвердить, впиши её название.</div>
+    <div class="field"><input class="input" id="dg-name" placeholder="${esc(S.group.name)}"></div>
+    <button class="btn danger block" data-del>Удалить навсегда</button>`);
+  close.el.querySelector('[data-del]').addEventListener('click', async e => {
+    const inp = $('#dg-name', close.el);
+    if (inp.value.trim() !== S.group.name) return fieldErr(inp, 'Название не совпадает');
+    e.target.disabled = true;
+    e.target.textContent = 'Удаляю…';
+    try {
+      unsubs.forEach(u => u()); unsubs = [];
+      await store.deleteGroup();
+      close();
+      if (DEMO) return location.reload();
+      S.group = null;
+      history.replaceState(null, '', location.pathname);
+      renderGroupPicker();
+      toast('Группа удалена');
+    } catch (err) {
+      console.error(err);
+      e.target.disabled = false;
+      e.target.textContent = 'Удалить навсегда';
+      fieldErr(inp, 'Не получилось: ' + (err.message || err));
+    }
+  });
 }
 
 /* ---------------- вход и выбор группы ---------------- */
@@ -743,7 +791,10 @@ function openScan(file) {
       return `<div class="r"><input type="checkbox" checked data-i="${i}">
         <span style="min-width:0">${old ? `<b>${esc(a.ticker)}</b> <span class="muted small">${esc(old.name)}</span>`
           : `<input class="input" style="width:110px;display:inline-block${a.guess ? ';border-color:var(--yellow)' : ''}" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
-          <div>${warn}${extra ? ` <span class="small muted">· ${extra}</span>` : ''}</div></span>
+          <div>${warn}${extra ? ` <span class="small muted">· ${extra}</span>` : ''}</div>
+          <select class="input" data-i="${i}" data-k="type" style="width:auto;padding:3px 8px;margin-top:4px;font-size:12px">
+            ${[['stock', 'Акции'], ['crypto', 'Крипто']].map(([v, l]) => `<option value="${v}" ${(a.type || old?.type || res.pageType || 'stock') === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select></span>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="price" value="${a.price != null ? U.plain(a.price) : ''}"${bad('price')}>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="change" value="${a.change != null ? U.plain(a.change) : ''}" placeholder="изм. %"${bad('change')}>
       </div>`;
@@ -751,7 +802,7 @@ function openScan(file) {
     const ec = res.economy;
     step.innerHTML = `
       <img class="preview-img" src="${url}" alt="">
-      <div class="hint" style="margin-bottom:6px">Проверь цифры перед сохранением, их можно поправить.</div>
+      <div class="hint" style="margin-bottom:6px">${res.pageType ? `Похоже на вкладку «${res.pageType === 'crypto' ? 'Крипто' : 'Акции'}». ` : 'Не понял, акции это или крипта — выбери тип у каждого актива. '}Проверь цифры перед сохранением, их можно поправить.</div>
       <div class="review">${res.assets.map(rowA).join('')}
       ${res.indices.map((ix, j) => `<div class="r"><input type="checkbox" ${ix.unsure ? '' : 'checked'} data-ix="${j}">
         <span><b>Индекс ${esc(ix.code)}</b>${ix.unsure ? `<div class="warn small">${chk} проверь</div>` : ''}</span>
@@ -774,6 +825,7 @@ function openScan(file) {
         if (!close.el.querySelector(`input[type=checkbox][data-i="${i}"]`).checked) return;
         const { unsure, guess, ...item } = a;
         if (known[a.ticker]) delete item.name; // название известной акции не трогаем — OCR его искажает
+        item.type = close.el.querySelector(`select[data-i="${i}"][data-k="type"]`).value;
         const ti = close.el.querySelector(`input[data-i="${i}"][data-k="ticker"]`);
         if (ti) {
           item.ticker = ti.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -836,6 +888,38 @@ document.addEventListener('click', async e => {
       case 'notify':
         if (!('Notification' in window)) return toast('Браузер не поддерживает уведомления');
         toast((await Notification.requestPermission()) === 'granted' ? 'Уведомления включены' : 'Уведомления запрещены в настройках браузера');
+        break;
+      case 'select-mode': S.selecting = true; S.sel.clear(); render(); break;
+      case 'select-cancel': S.selecting = false; S.sel.clear(); render(); break;
+      case 'toggle-sel': S.sel.has(t) ? S.sel.delete(t) : S.sel.add(t); render(); break;
+      case 'select-all': {
+        const shown = [...document.querySelectorAll('.market .row[data-t]')].map(r => r.dataset.t);
+        const all = shown.every(x => S.sel.has(x));
+        shown.forEach(x => all ? S.sel.delete(x) : S.sel.add(x));
+        render(); break;
+      }
+      case 'delete-selected': {
+        if (!S.sel.size) return toast('Ничего не выбрано');
+        const list = [...S.sel];
+        if (!confirm(`Удалить у всех участников: ${list.join(', ')}? История цен тоже удалится.`)) break;
+        for (const x of list) await store.deleteAsset(x);
+        S.selecting = false; S.sel.clear(); render();
+        toast(`<i class="ti ti-check up"></i> Удалено: ${list.length}`);
+        break;
+      }
+      case 'delete-asset':
+        if (!confirm(`Удалить ${t} у всех участников? История цен тоже удалится.`)) break;
+        await store.deleteAsset(t);
+        location.hash = '#/market';
+        toast(`<i class="ti ti-check up"></i> ${esc(t)} удалён`);
+        break;
+      case 'delete-group': openDeleteGroup(); break;
+      case 'exit-group':
+        if (!confirm(`Выйти из группы «${S.group.name}»?`)) break;
+        unsubs.forEach(u => u()); unsubs = [];
+        await store.exitGroup();
+        S.group = null; history.replaceState(null, '', location.pathname);
+        renderGroupPicker();
         break;
       case 'approve': await store.approveMember(el.dataset.uid); toast('<i class="ti ti-check up"></i> Участник принят'); break;
       case 'remove':

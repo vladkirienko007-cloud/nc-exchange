@@ -136,6 +136,8 @@ function createDemoStore() {
     async approveMember(uid) { state.members[uid].approved = true; save(); },
     async removeMember(uid) { delete state.members[uid]; save(); },
     leaveGroup() {},
+    async deleteGroup() { state = seed(); save(); },
+    async exitGroup() {},
     async renameMe(name) { me.name = name; state.members.me.name = name; save(); },
     reset() { state = seed(); save(); },
     inviteLink() { return location.href.split('#')[0]; },
@@ -195,6 +197,16 @@ async function createFirebaseStore() {
   const gref = (...p) => F.doc(db, 'groups', gid, ...p);
   const gcol = (...p) => F.collection(db, 'groups', gid, ...p);
   const ucol = (...p) => F.collection(db, 'users', user.uid, ...p);
+
+  async function deleteAll(col) {
+    for (;;) {
+      const s = await F.getDocs(F.query(col, F.limit(400)));
+      if (s.empty) return;
+      const b = F.writeBatch(db);
+      s.docs.forEach(d => b.delete(d.ref));
+      await b.commit();
+    }
+  }
 
   function snapList(q, cb, map = d => ({ id: d.id, ...d.data() })) {
     return F.onSnapshot(q, s => cb(s.docs.map(map)), err => console.warn(err));
@@ -290,7 +302,40 @@ async function createFirebaseStore() {
       });
     },
     deleteHistory: (t, id) => F.deleteDoc(gref('assets', t, 'history', id)),
-    deleteAsset: t => F.deleteDoc(gref('assets', t)),
+    async deleteAsset(t) {
+      // вложенная история сама не удаляется — чистим её пачками
+      await deleteAll(gcol('assets', t, 'history'));
+      await F.deleteDoc(gref('assets', t));
+    },
+    // Удалить группу целиком (только создатель). Свой документ участника и
+    // документ группы — последними: по ним правила проверяют права.
+    async deleteGroup() {
+      const assets = await F.getDocs(gcol('assets'));
+      for (const d of assets.docs) await deleteAll(gcol('assets', d.id, 'history'));
+      await deleteAll(gcol('assets'));
+      await deleteAll(gcol('indices'));
+      const members = await F.getDocs(gcol('members'));
+      const others = members.docs.filter(d => d.id !== user.uid);
+      for (let i = 0; i < others.length; i += 400) {
+        const b = F.writeBatch(db);
+        others.slice(i, i + 400).forEach(d => b.delete(d.ref));
+        await b.commit();
+      }
+      const trades = await F.getDocs(F.query(ucol('trades'), F.where('group', '==', gid)));
+      for (const d of trades.docs) await F.deleteDoc(d.ref);
+      const ref = gref();
+      await F.deleteDoc(gref('members', user.uid)).catch(() => {});
+      await F.deleteDoc(ref);
+      clearInterval(heartbeat);
+      localStorage.removeItem('ncx-group');
+      gid = null;
+    },
+    async exitGroup() {
+      await F.deleteDoc(gref('members', user.uid));
+      clearInterval(heartbeat);
+      localStorage.removeItem('ncx-group');
+      gid = null;
+    },
     addTrade: t => F.addDoc(ucol('trades'), { ...t, group: gid }),
     deleteTrade: id => F.deleteDoc(F.doc(ucol('trades'), id)),
     saveAlert: (t, alert) => alert
