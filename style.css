@@ -85,6 +85,8 @@ button, input, select { font: inherit; color: inherit; }
 .market .row.alerted { background: var(--yellow-bg); }
 .market .row.selected { background: #1a2440; }
 .sel-box.on { color: var(--blue-soft); }
+.order-btns { display: flex; gap: 4px; }
+.order-btns .btn { padding: 5px; }
 .asset-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .asset-name .t { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .asset-name .s { font-size: 11px; color: var(--muted); }

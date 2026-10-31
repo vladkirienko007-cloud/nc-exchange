@@ -13,6 +13,7 @@ const S = {
   favs: new Set(lsGet('ncx-favs', [])),
   range: '24h',
   selecting: false, sel: new Set(),
+  ordering: false, order: lsGet('ncx-order', []), // свой порядок строк (на этом устройстве)
 };
 let store;
 let unsubs = [];
@@ -127,7 +128,7 @@ function viewMarket() {
   if (S.filter === 'crypto') list = list.filter(a => a.type === 'crypto');
   if (S.filter === 'fav') list = list.filter(a => S.favs.has(a.ticker));
   if (S.filter === 'under') list = list.filter(a => (U.discount(a) ?? 0) > 0).sort((a, b) => U.discount(b) - U.discount(a));
-  else list.sort((a, b) => (S.favs.has(b.ticker) - S.favs.has(a.ticker)) || a.ticker.localeCompare(b.ticker));
+  else sortByOrder(list);
   const chip = (f, label) => `<button class="chip ${f === 'under' ? 'green' : ''} ${S.filter === f ? 'on' : ''}" data-act="filter" data-f="${f}">${label}</button>`;
   return `
     ${econ || idx.length ? `<div class="econ">
@@ -136,7 +137,12 @@ function viewMarket() {
       ${idx.map(i => `<div class="panel"><div class="lbl">${esc(i.code)}</div><div class="val num">${U.plain(i.value)} <span class="small ${U.cls(i.change)}">${U.pct(i.change)}</span></div></div>`).join('')}
     </div>` : ''}
     <div class="chips">${chip('all', 'Все')}${chip('stock', 'Акции')}${chip('crypto', 'Крипто')}${chip('fav', '<i class="ti ti-star"></i> Избранное')}${chip('under', 'Недооценённые')}
-      ${isOwner() && list.length && !S.selecting ? '<button class="chip" data-act="select-mode" style="margin-left:auto"><i class="ti ti-checkbox"></i> Выбрать</button>' : ''}</div>
+      <span style="margin-left:auto;display:flex;gap:6px">
+      ${list.length > 1 && !S.selecting && !S.ordering && S.filter !== 'under' ? '<button class="chip" data-act="order-mode"><i class="ti ti-arrows-sort"></i> Порядок</button>' : ''}
+      ${isOwner() && list.length && !S.selecting && !S.ordering ? '<button class="chip" data-act="select-mode"><i class="ti ti-checkbox"></i> Выбрать</button>' : ''}</span></div>
+    ${S.ordering ? `<div class="banner" style="background:var(--panel2);color:var(--text)">
+      <span>Двигай строки стрелками. Порядок сохраняется на этом устройстве.</span>
+      <span style="display:flex;gap:6px"><button class="btn ghost" data-act="order-reset">Сбросить</button><button class="btn primary" data-act="order-done">Готово</button></span></div>` : ''}
     ${S.selecting ? `<div class="banner" style="background:var(--panel2);color:var(--text)">
       <span>Выбрано: ${S.sel.size}</span>
       <span style="display:flex;gap:6px;flex-wrap:wrap">
@@ -150,6 +156,12 @@ function viewMarket() {
     </div>`;
 }
 
+// Свой порядок строк; новые активы — в конце, избранные без своего порядка — сверху.
+function sortByOrder(list) {
+  const pos = t => { const i = S.order.indexOf(t); return i < 0 ? Infinity : i; };
+  return list.sort((a, b) => (pos(a.ticker) - pos(b.ticker)) || (S.favs.has(b.ticker) - S.favs.has(a.ticker)) || a.ticker.localeCompare(b.ticker));
+}
+
 function tileFor(a, lg) {
   const short = /^NC/.test(a.ticker) ? 'NC' : (a.name || a.ticker || '?').split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
   return `<div class="tile ${a.type === 'crypto' ? 'crypto' : ''} ${lg ? 'lg' : ''}">${esc(short)}</div>`;
@@ -161,14 +173,16 @@ function assetRow(a) {
   const hit = alertHit(a, alert);
   const stale = a.updatedAt && Date.now() - a.updatedAt > U.STALE_MS;
   const sel = S.selecting && S.sel.has(a.ticker);
-  return `<div class="row ${sel ? 'selected' : hit ? 'alerted' : d > 0 ? 'under' : ''}" data-act="${S.selecting ? 'toggle-sel' : 'open'}" data-t="${esc(a.ticker)}">
+  return `<div class="row ${sel ? 'selected' : hit ? 'alerted' : d > 0 ? 'under' : ''}" data-act="${S.selecting ? 'toggle-sel' : S.ordering ? '' : 'open'}" data-t="${esc(a.ticker)}">
     <div class="asset-name">${tileFor(a)}<div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${esc(a.ticker)} · ${a.type === 'crypto' ? 'Крипто' : 'Акции'} ${S.favs.has(a.ticker) ? '<i class="ti ti-star warn"></i>' : ''}${alert ? '<i class="ti ti-bell warn"></i>' : ''}</div></div></div>
     <div class="price num c-price">${U.money(a.price)}</div>
     <div class="num c-change ${U.cls(a.change)}">${U.pct(a.change)}</div>
     <div class="num c-fund">${a.fundamental ? U.money(a.fundamental) + `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'ниже на ' + U.pct(d, false) : 'выше на ' + U.pct(-d, false)}</div>` : '<span class="muted">—</span>'}</div>
-    <div class="c-spark">${spark(a.spark)}</div>
+    <div class="c-spark">${S.ordering
+      ? `<span class="order-btns"><button class="btn icon" data-act="move" data-t="${esc(a.ticker)}" data-dir="-1" aria-label="Выше"><i class="ti ti-arrow-up"></i></button><button class="btn icon" data-act="move" data-t="${esc(a.ticker)}" data-dir="1" aria-label="Ниже"><i class="ti ti-arrow-down"></i></button></span>`
+      : spark(a.spark)}</div>
     <div class="small c-who ${hit ? 'warn' : stale ? 'warn' : 'muted'}">${hit ? hitText(alert, a) : a.updatedAt ? esc(a.updatedBy) + ' · ' + U.ago(a.updatedAt) + (stale ? ' · устарело' : '') : 'нет цены'}</div>
-    ${S.selecting
+    ${S.ordering ? '<span class="c-star"></span>' : S.selecting
       ? `<span class="star c-star sel-box ${sel ? 'on' : ''}"><i class="ti ti-${sel ? 'square-check' : 'square'}"></i></span>`
       : `<button class="star c-star ${S.favs.has(a.ticker) ? 'on' : ''}" data-act="fav" data-t="${esc(a.ticker)}" aria-label="В избранное"><i class="ti ti-star"></i></button>`}
   </div>`;
@@ -950,6 +964,20 @@ document.addEventListener('click', async e => {
         if (!('Notification' in window)) return toast('Браузер не поддерживает уведомления');
         toast((await Notification.requestPermission()) === 'granted' ? 'Уведомления включены' : 'Уведомления запрещены в настройках браузера');
         break;
+      case 'order-mode': S.ordering = true; render(); break;
+      case 'order-done': S.ordering = false; render(); break;
+      case 'order-reset': S.order = []; lsSet('ncx-order', []); render(); break;
+      case 'move': {
+        // меняем местами с соседом среди видимых строк (с учётом фильтра)
+        const shown = [...document.querySelectorAll('.market .row[data-t]')].map(r => r.dataset.t);
+        const i = shown.indexOf(t), j = i + +el.dataset.dir;
+        if (i < 0 || j < 0 || j >= shown.length) break;
+        const full = sortByOrder([...S.assets]).map(a => a.ticker);
+        const a = full.indexOf(t), b = full.indexOf(shown[j]);
+        [full[a], full[b]] = [full[b], full[a]];
+        S.order = full; lsSet('ncx-order', full); render();
+        break;
+      }
       case 'select-mode': S.selecting = true; S.sel.clear(); render(); break;
       case 'select-cancel': S.selecting = false; S.sel.clear(); render(); break;
       case 'toggle-sel': S.sel.has(t) ? S.sel.delete(t) : S.sel.add(t); render(); break;
