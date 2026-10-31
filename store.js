@@ -178,6 +178,20 @@ function createDemoStore() {
 
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 
+function authError(e) {
+  const m = {
+    'auth/invalid-email': 'Почта написана с ошибкой.',
+    'auth/invalid-credential': 'Неверная почта или пароль.',
+    'auth/wrong-password': 'Неверная почта или пароль.',
+    'auth/user-not-found': 'Такой почты нет. Нажми «Создать аккаунт».',
+    'auth/email-already-in-use': 'На эту почту уже есть аккаунт. Нажми «Войти».',
+    'auth/weak-password': 'Пароль слишком короткий, нужно хотя бы 6 символов.',
+    'auth/too-many-requests': 'Слишком много попыток. Подожди немного и попробуй снова.',
+    'auth/network-request-failed': 'Нет связи с сервером. Проверь интернет или VPN.',
+  };
+  return m[e.code] || e.message;
+}
+
 async function createFirebaseStore() {
   const [{ initializeApp }, A, F] = await Promise.all([
     import(FB + 'firebase-app.js'),
@@ -185,7 +199,11 @@ async function createFirebaseStore() {
     import(FB + 'firebase-firestore.js'),
   ]);
   const app = initializeApp(FIREBASE_CONFIG);
-  const auth = A.getAuth(app);
+  // Явно храним вход в IndexedDB (с запасным localStorage), чтобы не входить каждый раз.
+  const auth = A.initializeAuth(app, {
+    persistence: [A.indexedDBLocalPersistence, A.browserLocalPersistence],
+    popupRedirectResolver: A.browserPopupRedirectResolver,
+  });
   const db = F.initializeFirestore(app, {
     localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }),
   });
@@ -250,6 +268,22 @@ async function createFirebaseStore() {
         if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') throw new Error('Окно входа закрыто.');
         throw e;
       }
+    },
+    // Вход по почте: без всплывающих окон и сторонних страниц — работает в Safari на iPhone.
+    async signInEmail(email, password) {
+      try { await A.signInWithEmailAndPassword(auth, email, password); }
+      catch (e) { throw new Error(authError(e)); }
+    },
+    async signUpEmail(email, password, name) {
+      try {
+        const cred = await A.createUserWithEmailAndPassword(auth, email, password);
+        await A.updateProfile(cred.user, { displayName: name });
+        localStorage.setItem('ncx-name', name);
+      } catch (e) { throw new Error(authError(e)); }
+    },
+    async resetPassword(email) {
+      try { await A.sendPasswordResetEmail(auth, email); }
+      catch (e) { throw new Error(authError(e)); }
     },
     async signOut() { localStorage.removeItem('ncx-group'); await A.signOut(auth); },
     async createGroup(name) {
