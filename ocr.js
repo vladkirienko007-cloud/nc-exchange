@@ -1,7 +1,12 @@
 // Распознавание скриншота планшета NC Exchange прямо в браузере (Tesseract.js).
 // Игру не трогаем: читаем только картинку, которую дал пользователь.
 
+import { readGlyphs, setTemplates, hasTemplates } from './glyphs.js';
+
 const TESSERACT = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+
+// Эталоны цифр шрифта игры (собираются из dev/truth.json). Нет файла — читаем только Tesseract.
+const templatesReady = import('./templates.js').then(m => setTemplates(m.TEMPLATES)).catch(() => {});
 
 let workerPromise = null;
 let progressCb = () => {};
@@ -46,7 +51,7 @@ async function getWorker() {
 // Светлый текст на тёмном фоне → тёмный на белом, крупнее в 2–3 раза.
 async function preprocess(file, opt = {}) {
   const bmp = await createImageBitmap(file);
-  const scale = opt.scale || Math.min(3, Math.max(1, 4600 / bmp.width));
+  const scale = opt.scale || Math.min(3, Math.max(1, 3840 / bmp.width));
   const c = document.createElement('canvas');
   c.width = Math.round(bmp.width * scale);
   c.height = Math.round(bmp.height * scale);
@@ -200,11 +205,14 @@ function splitRow(c) {
     return o;
   };
   const s1 = splitX(band1);
-  const parts = { name: cut(0, s1 || W, band1), price: s1 ? cut(s1, W, band1) : null, top: cut(0, W, band1) };
+  const parts = { name: cut(0, s1 || W, band1), price: s1 ? cut(s1, W, band1) : null, top: cut(0, W, band1), boxes: {} };
+  // где цена и процент на вырезке строки — чтобы прочитать их по эталонам из исходных пикселей
+  if (s1) parts.boxes.price = [s1, band1[0], Math.min(W, lastInk(band1) + 3), band1[1]];
   if (band2) {
     const s2 = splitX(band2);
     parts.ticker = cut(0, s2 || W, band2);
     parts.pct = s2 ? cut(s2, W, band2) : null;
+    if (s2) parts.boxes.pct = [s2, band2[0], Math.min(W, lastInk(band2) + 3), band2[1]];
   }
   return parts;
 }
@@ -223,6 +231,14 @@ const PRICE_SCALES = [2.2, 2.8, 1.6];
 async function readRows(ew, bmp, rows, onStep) {
   const parts = PRICE_SCALES.map(k => rows.map(r => splitRow(cropRow(bmp, r, k))));
   const out = rows.map(() => ({ prices: [] }));
+  // сначала эталоны шрифта игры — если все знаки уверенно похожи, это точное значение
+  rows.forEach((r, i) => {
+    const bx = rowBoxes(r);
+    const gp = readGlyphs(glyphCanvas(bmp, bx.price), { style: 'b', freePrefix: true });
+    if (gp && gp.sure && /\$\d/.test(gp.text)) out[i].gPrice = gp.text;
+    const gc = glyphPct(bmp, bx.pct);
+    if (gc) out[i].gPct = gc;
+  });
   const total = rows.length * (PRICE_SCALES.length + 3);
   let n = 0;
   await ew.setParameters(WL.price);
@@ -278,14 +294,16 @@ function votePrice(texts, pagePrices) {
 // Подпись карточки → что под ней. kind: money — $ и копейки, int — целое, pct — проценты.
 // sub — что лежит во второй строке карточки (у части карточек там тоже число).
 const CARDS = [
-  { re: /^Фундамент/i, key: 'fundamental', kind: 'money' },
-  { re: /^Ценов/i, key: 'fundamental', kind: 'money' },
-  { re: /^Выручк/i, key: 'revenue', kind: 'money' },
-  { re: /^Чист/i, key: 'profit', kind: 'money' },
-  { re: /^Капитал/i, key: 'capital', kind: 'money', sub: 'debt', subKind: 'money' },
-  { re: /^обращ/i, key: 'circulating', kind: 'int', sub: 'maxSupply', subKind: 'int', leftWord: true },
-  { re: /^Активн/i, key: 'activity', kind: 'pct', sub: 'adoption', subKind: 'pct' },
-  { re: /^Рыночн/i, key: 'risk', kind: 'pct', sub: 'orderFlow', subKind: 'pct' },
+  // подписи карточек с большой буквы: строчные «активности», «капитала», «рыночный» есть
+  // в других местах экрана
+  { re: /^Фундамент/, key: 'fundamental', kind: 'money' },
+  { re: /^Ценов/, key: 'fundamental', kind: 'money' },
+  { re: /^Выручк/, key: 'revenue', kind: 'money' },
+  { re: /^Чист/, key: 'profit', kind: 'money' },
+  { re: /^[KК]апитал/, key: 'capital', kind: 'money', sub: 'debt', subKind: 'money' },
+  { re: /^обращ/, key: 'circulating', kind: 'int', sub: 'maxSupply', subKind: 'int', leftWord: true },
+  { re: /^[AА]ктивн/, key: 'activity', kind: 'pct1', sub: 'adoption', subKind: 'pct1' },
+  { re: /^[PР]ыночн/, key: 'risk', kind: 'pct2', sub: 'orderFlow', subKind: 'pct2' },
 ];
 
 // Вырезать прямоугольник из исходной картинки, увеличить и инвертировать (светлый текст → тёмный).
@@ -310,6 +328,86 @@ function cropBox(bmp, b, k) {
   return c;
 }
 
+// Вырезка для чтения по эталонам: увеличение без размытия краёв в «кашу» и порог
+// относительно яркости самого текста — остаются середины линий, жирные цифры не слипаются.
+export function glyphCanvas(bmp, b, k = 3, rel = 0.5) {
+  const c = document.createElement('canvas');
+  const pad = 4;
+  c.width = Math.max(1, Math.round(b.w * k)) + pad * 2;
+  c.height = Math.max(1, Math.round(b.h * k)) + pad * 2;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, c.width, c.height);
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(bmp, b.x, b.y, b.w, b.h, pad, pad, c.width - pad * 2, c.height - pad * 2);
+  const img = g.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  const vs = new Uint8Array(d.length / 4);
+  for (let i = 0; i < vs.length; i++) vs[i] = Math.max(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
+  const sorted = Array.from(vs).sort((x, y) => x - y);
+  const bg = sorted[Math.floor(sorted.length * 0.3)];
+  // яркость самого текста — середина среди заметно светлых пикселей (у цветных процентов
+  // она ниже, чем у белой цены, случайно задетой сверху)
+  const textPx = sorted.filter(v => v > bg + 40);
+  const textV = textPx.length ? textPx[Math.floor(textPx.length * 0.6)] : sorted[sorted.length - 1];
+  const T = bg + (textV - bg) * rel;
+  const CW = c.width, CH = c.height;
+  const on = new Uint8Array(vs.length);
+  for (let i = 0; i < vs.length; i++) on[i] = vs[i] >= T ? 1 : 0;
+  // рамка выделенной строки и полоса прокрутки — длинные линии, не текст
+  for (let x = 0; x < CW; x++) { let n = 0; for (let y = 0; y < CH; y++) n += on[y * CW + x]; if (n > CH * 0.8) for (let y = 0; y < CH; y++) on[y * CW + x] = 0; }
+  for (let y = 0; y < CH; y++) { let n = 0; for (let x = 0; x < CW; x++) n += on[y * CW + x]; if (n > CW * 0.8) for (let x = 0; x < CW; x++) on[y * CW + x] = 0; }
+  for (let i = 0; i < vs.length; i++) { const v = on[i] ? 0 : 255; d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+// Где в строке списка цена и процент: правая часть верхней и нижней половины строки.
+// Название слева при чтении пропускается как «мусор», цена начинается со знака $.
+function rowBoxes(r) {
+  const th = r.height / 1.25, ty = r.top + th * 0.12; // плашка-иконка строки
+  return {
+    // у процента справа не захватываем зелёную полосу прокрутки списка — она путает знак по цвету
+    price: { x: r.left + r.width * 0.4, y: ty - th * 0.05, w: r.width * 0.6, h: th * 0.5 },
+    pct: { x: r.left + r.width * 0.5, y: ty + th * 0.52, w: r.width * 0.43, h: th * 0.4 },
+  };
+}
+
+// Знак процента по цвету текста: красный — падение, зелёный — рост, серый — 0.
+// Минус в игре мелкий и тонкий, по цвету надёжнее.
+export function colorSign(bmp, b) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(b.w)); c.height = Math.max(1, Math.round(b.h));
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(bmp, b.x, b.y, b.w, b.h, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let r = 0, gr = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.max(d[i], d[i + 1], d[i + 2]) < 110) continue;
+    r += d[i]; gr += d[i + 1];
+  }
+  if (r > gr * 1.25) return -1;
+  if (gr > r * 1.25) return 1;
+  return 0;
+}
+
+// Процент по эталонам: цифры — эталоны, знак — цвет.
+function glyphPct(bmp, box) {
+  // слева от процента может быть знак, стрелка или край карточки — пропускаются
+  const g = readGlyphs(glyphCanvas(bmp, box), { style: 'p', freePrefix: true });
+  if (!g || !g.sure || !/%/.test(g.text)) return null;
+  const v = digitsValue(g.text, 'pct2');
+  if (v == null || v > 100) return null;
+  const sign = colorSign(bmp, box);
+  return { v: v === 0 ? 0 : (sign || (/^[-−]/.test(g.text) ? -1 : 1)) * v, exact: v === 0 || sign !== 0, text: g.text };
+}
+
+// Прямоугольник куска строки списка (в координатах вырезки cropRow с увеличением k) → исходная картинка.
+function rowPartBox(r, box, k = 2.2) {
+  const [x0, y0, x1, y1] = box;
+  return { x: r.left + x0 / k - 1, y: r.top + y0 / k - 1, w: (x1 - x0) / k + 2, h: (y1 - y0) / k + 2 };
+}
+
 function parseKind(t, kind) {
   // в цифрах этого шрифта OCR путает 0 с O и C
   t = (t || '').replace(/[OoCcСсОо]/g, '0').replace(/[^\d ,.%-]/g, ' ').trim();
@@ -319,7 +417,7 @@ function parseKind(t, kind) {
     const v = +m[m.length - 1].replace(/ /g, '');
     return isFinite(v) ? { v, exact: true } : null;
   }
-  if (kind === 'pct') {
+  if (kind === 'pct' || kind === 'pct1' || kind === 'pct2') {
     const m = /(\d{1,3})[.,](\d{1,2})\s*%?|(\d{2,4})\s*%/.exec(t);
     if (!m) return null;
     if (m[1] != null) return { v: +(m[1] + '.' + m[2]), exact: true };
@@ -366,45 +464,118 @@ async function voteBox(w, bmp, box, kind, scales = [3, 4, 2.4], strict = false) 
   return { v: best.v, exact: best.exact && (strict ? count(best.v) === scales.length : count(best.v) >= 2) };
 }
 
-// words — слова первого прохода с координатами на увеличенной картинке (s — во сколько раз).
-async function readCards(bmp, words, s, onStep) {
-  const W = words.map(x => ({ t: x.text, x0: x.bbox.x0 / s, y0: x.bbox.y0 / s, x1: x.bbox.x1 / s, y1: x.bbox.y1 / s }));
+const toWords = (words, s) => words.map(x => ({ t: x.text, x0: x.bbox.x0 / s, y0: x.bbox.y0 / s, x1: x.bbox.x1 / s, y1: x.bbox.y1 / s }));
+
+// Найти карточки показателей и прямоугольники значения и подстроки в каждой.
+// words — слова прохода «разреженный текст» с координатами на увеличенной картинке (s — во сколько раз).
+function cardBoxes(bmp, words, s) {
+  const W = toWords(words, s);
+  // все слова, похожие на подписи карточек (их бывает несколько: «Активные» во вкладках)
+  const cands = [];
+  W.forEach((w, i) => {
+    for (const c of CARDS) {
+      if (!c.re.test(w.t)) continue;
+      let x0 = w.x0;
+      // "В обращении": карточка начинается со слова "В" слева
+      if (c.leftWord && i > 0 && W[i - 1].x1 < x0 && x0 - W[i - 1].x1 < (w.y1 - w.y0) * 1.5) x0 = W[i - 1].x0;
+      cands.push({ ...c, x0, y0: w.y0, y1: w.y1 });
+    }
+  });
+  if (!cands.length) return [];
+  // карточки стоят в один ряд — берём ряд, где больше всего разных подписей
+  const near = (a, b) => Math.abs(a.y0 - b.y0) < (b.y1 - b.y0) * 1.5;
+  const rowKeys = f => new Set(cands.filter(o => near(o, f)).map(o => o.key)).size;
+  const anchor = cands.reduce((a, b) => rowKeys(b) > rowKeys(a) ? b : a);
   const found = [];
-  for (const c of CARDS) {
-    const i = W.findIndex(x => c.re.test(x.t));
-    if (i < 0 || found.some(f => f.key === c.key)) continue;
-    let x0 = W[i].x0;
-    // "В обращении": карточка начинается со слова "В" слева
-    if (c.leftWord && i > 0 && W[i - 1].x1 < x0 && x0 - W[i - 1].x1 < (W[i].y1 - W[i].y0) * 1.5) x0 = W[i - 1].x0;
-    found.push({ ...c, x0, y0: W[i].y0, y1: W[i].y1 });
-  }
-  if (!found.length) return null;
+  for (const o of cands) if (near(o, anchor) && !found.some(f => f.key === o.key)) found.push(o);
   found.sort((a, b) => a.x0 - b.x0);
   // ширина карточки — до следующей подписи в том же ряду
   const gaps = found.slice(1).map((f, i) => f.x0 - found[i].x0).filter(g => g > 0);
-  const cw = gaps.length ? Math.min(...gaps) : (found[0].y1 - found[0].y0) * 9;
+  // если какая-то подпись не нашлась, промежуток между соседними — две карточки;
+  // карточка не шире ~17 высот подписи
+  const lh = found[0].y1 - found[0].y0;
+  const cw = Math.min(gaps.length ? Math.min(...gaps) : Infinity, lh * 17);
+  return found.map(f => {
+    const h = f.y1 - f.y0;
+    // строки значения и подстроки ищем по самому изображению: значение крупнее подписи;
+    // хвостики букв подписи (щ, р) — короткие, отбрасываем
+    const [valRun, subRun] = textRuns(bmp, { x: f.x0, y: f.y1 + 1, w: cw * 0.9, h: h * 7 }, Math.max(4, h * 0.6));
+    return {
+      ...f,
+      valBox: valRun && { x: f.x0 - 3, y: valRun[0] - 3, w: cw * 0.92, h: valRun[1] - valRun[0] + 6 },
+      subBox: f.sub && subRun && { x: f.x0 - 3, y: subRun[0] - 3, w: cw * 0.92, h: subRun[1] - subRun[0] + 6 },
+    };
+  });
+}
+
+// Прочитать число по эталонам; null — эталонов нет или знаки не уверенно похожи.
+// Число из прочитанных по эталонам знаков. Запятые и пробелы мелкие и иногда теряются,
+// поэтому число собирается из одних цифр: у денег в игре всегда 2 знака после запятой,
+// у процентов — 1 (активность) или 2 (риск, изменение цены).
+export function digitsValue(text, kind) {
+  let t = text;
+  // формат: у денег есть $, у процентов — знак % и не меньше 2–3 цифр
+  if (kind === 'money' && !/\$\s*\d/.test(t)) return null;
+  if (kind !== 'money' && kind !== 'int' && !/%/.test(t)) return null;
+  const nd = (t.split(kind === 'money' ? '$' : '%')[kind === 'money' ? 1 : 0] || '').replace(/\D/g, '').length;
+  if ((kind === 'pct2' || kind === 'money') && nd < 3) return null;
+  if (kind === 'pct1' && nd < 2) return null;
+  if (kind === 'money') { const i = t.indexOf('$'); if (i >= 0) t = t.slice(i + 1); }
+  if (kind === 'pct1' || kind === 'pct2') {
+    // процент: берём только число прямо перед %, слева может быть мусор («4 0,00%»)
+    const dec = kind === 'pct1' ? 1 : 2;
+    t = t.replace(/%.*$/, '').trim();
+    const tail = t.split(/\s+/);
+    const last = tail.pop() || '';
+    const m = new RegExp('(\\d{1,3})[,.]+(\\d{' + dec + '})$').exec(last);
+    if (m) return +(m[1] + '.' + m[2]);
+    if (new RegExp('^\\d{' + (dec + 1) + ',' + (dec + 3) + '}$').test(last)) return +last / 10 ** dec;
+    // запятая прочиталась как пробел: «0 45%»
+    const prev = tail.pop() || '';
+    if (new RegExp('^\\d{' + dec + '}$').test(last) && /\d$/.test(prev)) return +(prev.replace(/\D/g, '').slice(-2) + '.' + last);
+    return null;
+  }
+  const d = t.replace(/\D/g, '');
+  if (!d) return null;
+  const div = kind === 'money' || kind === 'pct2' ? 100 : kind === 'pct1' ? 10 : 1;
+  return +d / div;
+}
+
+function glyphValue(canvas, kind, fromRight = false, style = 'b') {
+  // значения карточек — жирный шрифт ('b'), крупная цена в шапке ('h'); подстроки — мелкий серый ('r')
+  const g = readGlyphs(canvas, fromRight ? { style: 'r', freePrefix: true } : { style });
+  if (!g || !g.sure) return null;
+  const v = digitsValue(g.text, kind);
+  return v == null ? null : { v, exact: true, text: g.text };
+}
+
+async function readCards(bmp, words, s, onStep) {
+  const boxes = cardBoxes(bmp, words, s);
+  if (!boxes.length) return null;
   const ew = await getEngWorker();
   const out = { exact: {} };
   let n = 0;
-  for (const f of found) {
-    onStep(n++ / found.length);
-    const h = f.y1 - f.y0;
-    // строки значения и подстроки ищем по самому изображению: значение крупнее подписи
-    // хвостики букв подписи (щ, р) — короткие, отбрасываем
-    const [valRun, subRun] = textRuns(bmp, { x: f.x0, y: f.y1 + 1, w: cw * 0.9, h: h * 7 }, Math.max(4, h * 0.6));
-    if (!valRun) continue;
-    const valBox = { x: f.x0 - 3, y: valRun[0] - 3, w: cw * 0.92, h: valRun[1] - valRun[0] + 6 };
+  for (const f of boxes) {
+    onStep(n++ / boxes.length);
+    if (!f.valBox) continue;
+    let v = glyphValue(glyphCanvas(bmp, f.valBox), f.kind);
     await ew.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '$0123456789,.% ' });
-    const v = await voteBox(ew, bmp, valBox, f.kind);
+    const tv = await voteBox(ew, bmp, f.valBox, f.kind, [3]);
+    // по эталонам точнее; не совпало с Tesseract — значение по эталонам, но «проверь»
+    if (v && tv && Math.abs(tv.v - v.v) > 1e-6) v = { ...v, exact: false };
+    if (!v) v = tv;
     if (v) { out[f.key] = v.v; out.exact[f.key] = v.exact; }
-    if (f.sub && subRun) {
-      // во второй строке перед числом русские слова ("из", "Долг:", "Базовое принятие") —
-      // английская модель превращает их в цифры, поэтому здесь читает русская
-      const subBox = { x: f.x0 - 3, y: subRun[0] - 3, w: cw * 0.92, h: subRun[1] - subRun[0] + 6 };
+    if (f.subBox) {
+      // во второй строке перед числом русские слова ("из", "Долг:") — эталоны читают справа,
+      // пока знаки похожи на цифры; запасной путь — русская модель Tesseract
+      let sv = glyphValue(glyphCanvas(bmp, f.subBox, 3, 0.7), f.subKind, true);
       const rw = await getWorker();
       await rw.setParameters({ tessedit_pageseg_mode: '7' });
-      const sv = await voteBox(rw, bmp, subBox, f.subKind, [4.5, 5.5, 3.5], true); // шрифт мельче — увеличиваем сильнее
+      const tsv = await voteBox(rw, bmp, f.subBox, f.subKind, [4.5], true);
       await rw.setParameters({ tessedit_pageseg_mode: '3' });
+      // мелкий серый шрифт: уверены, только если эталоны и Tesseract прочитали одно и то же
+      if (sv) sv = { ...sv, exact: !!tsv && Math.abs(tsv.v - sv.v) < 1e-6 };
+      if (!sv) sv = tsv;
       if (sv) { out[f.sub] = sv.v; out.exact[f.sub] = sv.exact; }
     }
   }
@@ -413,39 +584,62 @@ async function readCards(bmp, words, s, onStep) {
 }
 
 // Шапка выбранного актива: "NCBTC · NC Exchange" слева, крупная цена справа, под ней процент.
-async function readHeader(bmp, words, s) {
-  const W = words.map(x => ({ t: x.text, x0: x.bbox.x0 / s, y0: x.bbox.y0 / s, x1: x.bbox.x1 / s, y1: x.bbox.y1 / s }));
-  const ex = W.findIndex(x => /^Ex[cс]h/i.test(x.t));
-  if (ex < 0) return null;
-  const h = W[ex].y1 - W[ex].y0;
-  // тикер — слово капсом левее "NC Exchange" в той же строке
-  const tw = W.slice(Math.max(0, ex - 4), ex).reverse().find(x => /^[A-ZА-Я№]{3,10}$/.test(latin(x.t)) && !/^N[CС]$/.test(x.t) && Math.abs(x.y0 - W[ex].y0) < h);
+function headerBoxes(words, s) {
+  const W = toWords(words, s);
+  // "NC Exchange" на экране два раза: заголовок приложения и шапка актива. Нужен тот,
+  // перед которым стоит тикер ("NCBTC · NC Exchange")
+  let ex = -1, tw = null, h = 0;
+  for (let i = 0; i < W.length && !tw; i++) {
+    if (!/Ex[cс]h/i.test(W[i].t)) continue;
+    const hh = W[i].y1 - W[i].y0;
+    const cand = W.slice(Math.max(0, i - 4), i).reverse().find(x => /^[A-ZА-Я№]{3,10}$/.test(latin(x.t.replace(/[·•.,:-]+$/, ''))) && !/^N[CС]$/.test(x.t) && Math.abs(x.y0 - W[i].y0) < hh);
+    if (cand) { ex = i; tw = { ...cand, t: cand.t.replace(/[·•.,:-]+$/, '') }; h = hh; }
+  }
   if (!tw) return null;
-  const ticker = latin(tw.t);
+  const out = { ticker: latin(tw.t) };
   // цена — слово с $ правее, по высоте рядом со строкой тикера (цена крупнее и чуть выше)
   const pw = W.filter(x => /\$/.test(x.t) && x.x0 > W[ex].x1 && x.y0 < W[ex].y1 + h * 2 && x.y1 > W[ex].y0 - h * 2)
     .sort((a, b) => a.y0 - b.y0)[0];
-  const out = { ticker, exact: {} };
-  const ew = await getEngWorker();
-  if (pw) {
-    await ew.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '$0123456789,. ' });
-    // крупная цена может состоять из нескольких слов ("$242 163,44") — берём весь хвост строки
-    const box = { x: pw.x0 - 3, y: pw.y0 - 3, w: Math.max(...W.filter(x => Math.abs(x.y0 - pw.y0) < h && x.x0 >= pw.x0).map(x => x.x1)) - pw.x0 + 6, h: pw.y1 - pw.y0 + 6 };
-    const v = await voteBox(ew, bmp, box, 'money');
-    if (v) { out.price = v.v; out.exact.price = v.exact; }
-    // процент — под ценой, правее её левого края
-    // стрелка ↑/↓ перед процентом читается как отдельное слово "%" — нужно слово с цифрами
-    const cw = W.find(x => /\d/.test(x.t) && /%/.test(x.t) && x.y0 > pw.y1 - 2 && x.y0 < pw.y1 + h * 3 && x.x1 > pw.x0);
-    if (cw) {
-      await ew.setParameters({ tessedit_char_whitelist: '+-0123456789,.%' });
-      const { data } = await ew.recognize(cropBox(bmp, { x: cw.x0 - 3, y: cw.y0 - 3, w: cw.x1 - cw.x0 + 6, h: cw.y1 - cw.y0 + 6 }, 4));
-      let c = readPct(data.text) || readPct(cw.t);
-      // знак по цвету тут не видно, а стрелка ↓ читается мусором — минус берём из текста слова
-      if (c && /^[-−–]/.test(cw.t.replace(/^[^\d+\-−–]*/, '')) && c.v > 0) c = { v: -c.v, exact: c.exact };
-      if (c) { out.change = c.v; out.exact.change = c.exact; }
-    }
-    await ew.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  if (!pw) return out;
+  // цена может состоять из нескольких слов ("$242 163,44"): берём подряд идущие числовые
+  // слова той же строки, не дальше одного пробела друг от друга
+  let x1 = pw.x1;
+  for (const x of W.filter(o => Math.abs(o.y0 - pw.y0) < h && o.x0 > pw.x0).sort((a, b) => a.x0 - b.x0)) {
+    if (x.x0 - x1 > (pw.y1 - pw.y0) * 0.8 || !/^[\d.,]+$/.test(x.t)) break;
+    x1 = x.x1;
   }
+  out.priceBox = { x: pw.x0 - 3, y: pw.y0 - 3, w: x1 - pw.x0 + 6, h: pw.y1 - pw.y0 + 6 };
+  // процент — под ценой; стрелка ↑/↓ перед ним читается отдельным словом — нужно слово с цифрами
+  const cw = W.find(x => /\d/.test(x.t) && /%/.test(x.t) && x.y0 > pw.y1 - 2 && x.y0 < pw.y1 + h * 3 && x.x1 > pw.x0);
+  if (cw) { out.pctBox = { x: cw.x0 - 3, y: cw.y0 - 3, w: cw.x1 - cw.x0 + 6, h: cw.y1 - cw.y0 + 6 }; out.pctWord = cw.t; }
+  return out;
+}
+
+async function readHeader(bmp, words, s) {
+  const hb = headerBoxes(words, s);
+  if (!hb) return null;
+  const out = { ticker: hb.ticker, exact: {} };
+  const ew = await getEngWorker();
+  if (hb.priceBox) {
+    let v = glyphValue(glyphCanvas(bmp, hb.priceBox), 'money', false, 'h');
+    await ew.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '$0123456789,. ' });
+    const tv = await voteBox(ew, bmp, hb.priceBox, 'money', [3]);
+    if (v && tv && Math.abs(tv.v - v.v) > 0.005) v = { ...v, exact: false };
+    if (!v) v = tv;
+    if (v) { out.price = v.v; out.exact.price = v.exact; }
+  }
+  if (hb.pctBox) {
+    let c = glyphPct(bmp, hb.pctBox);
+    if (!c) {
+      await ew.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '+-0123456789,.%' });
+      const { data } = await ew.recognize(cropBox(bmp, hb.pctBox, 4));
+      c = readPct(data.text) || readPct(hb.pctWord);
+      // минус берём из текста слова: стрелка ↓ читается мусором
+      if (c && /^[-−–]/.test(hb.pctWord.replace(/^[^\d+\-−–]*/, '')) && c.v > 0) c = { v: -c.v, exact: c.exact };
+    }
+    if (c) { out.change = c.v; out.exact.change = c.exact; }
+  }
+  await ew.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
   return out;
 }
 
@@ -480,8 +674,10 @@ async function readBanner(bmp, words, s) {
 // Два прохода по всей странице с разной обработкой (что не прочиталось в одном, часто
 // читается в другом) и отдельное чтение каждой строки списка.
 export async function recognize(file, known = {}, onProgress = () => {}) {
+  await templatesReady;
   const w = await getWorker();
-  const passes = [{ raw: false }, { raw: true }];
+  // цифры читаются по эталонам, общий текст нужен для названий и тикера — хватит одного прохода
+  const passes = [{ raw: false }];
   const steps = passes.length + 1;
   const texts = [];
   let words = [], wordScale = 1;
@@ -769,7 +965,10 @@ export function parseRows(rows, known = [], pagePrices = new Set()) {
     while (words.length && !/^[A-Z]/.test(words[0])) words.shift();
     const name = words.join(' ').replace(/\.+$/, '').trim();
     if (name.replace(/[^A-Za-z]/g, '').length < 3) continue;
-    const price = votePrice(r.prices || [], pagePrices);
+    // по эталонам точнее; Tesseract — перекрёстная проверка: не совпали — «проверь»
+    const gp = r.gPrice ? digitsValue(r.gPrice, 'money') : null;
+    const tv = votePrice(r.prices || [], pagePrices);
+    const price = gp != null ? { v: gp, exact: !tv || Math.abs(tv.v - gp) < 0.005 } : tv;
     if (!price) continue;
     // тикер — первое слово капсом; тип — по слову после точки, если прочиталось
     const tm = /\b([A-Z][A-Z0-9]{1,9})\b/.exec(latin(r.ticker || ''));
@@ -780,7 +979,8 @@ export function parseRows(rows, known = [], pagePrices = new Set()) {
     const kn = matchName(name, known) || (tk && known.find(a => a.ticker === tk));
     const ticker = kn ? kn.ticker : tk || guessTicker(name);
     if (!ticker) continue;
-    const change = readPct(r.pct || '');
+    const tc = readPct(r.pct || '');
+    const change = r.gPct ? { v: r.gPct.v, exact: r.gPct.exact && (!tc || Math.abs(Math.abs(tc.v) - Math.abs(r.gPct.v)) < 0.005) } : tc;
     const a = { ticker, exact: { price: price.exact }, price: price.v, guess: !kn && !tk };
     if (change) { a.change = change.v; a.exact.change = change.exact; }
     if (type) a.type = type;
@@ -894,6 +1094,38 @@ export function merge(results, known = {}) {
     if (economy.status == null && economy.demand == null && economy.costs == null) economy = null;
   }
   return { assets: out, indices, economy, pageType };
+}
+
+// Для обучения эталонов (dev/train.html): все прямоугольники с цифрами на скриншоте.
+// cache — чтобы при повторных прогонах не распознавать скриншот заново (долго).
+export async function trainingCrops(file, cache = {}) {
+  let data, canvas;
+  if (cache[file.name]) ({ data, canvas } = cache[file.name]);
+  else {
+    const w = await getWorker();
+    await w.setParameters({ tessedit_pageseg_mode: '11', tessedit_char_whitelist: '' });
+    canvas = await preprocess(file, { raw: false });
+    ({ data } = await w.recognize(canvas, {}, { text: true, blocks: true }));
+    await w.setParameters({ tessedit_pageseg_mode: '3' });
+    cache[file.name] = { data: { words: (data.words || []).map(w => ({ text: w.text, bbox: w.bbox })) }, canvas: { scale: canvas.scale } };
+  }
+  const bmp = await createImageBitmap(file);
+  const rws = await findRows(file);
+  const rows = rws.map(r => {
+    const bx = rowBoxes(r);
+    return { price: glyphCanvas(bmp, bx.price), pct: glyphCanvas(bmp, bx.pct) };
+  });
+  const hb = headerBoxes(data.words || [], canvas.scale);
+  const cards = {};
+  for (const f of cardBoxes(bmp, data.words || [], canvas.scale)) {
+    cards[f.key] = { val: f.valBox && glyphCanvas(bmp, f.valBox) };
+    if (f.sub) cards[f.sub] = { sub: f.subBox && glyphCanvas(bmp, f.subBox, 3, 0.7) };
+  }
+  return {
+    rows,
+    header: hb && { ticker: hb.ticker, price: hb.priceBox && glyphCanvas(bmp, hb.priceBox), pct: hb.pctBox && glyphCanvas(bmp, hb.pctBox) },
+    cards,
+  };
 }
 
 export const _debug = { preprocess, getWorker, getEngWorker, findRows, cropRow, splitRow, cropBox, readCards, CARDS, textRuns };
