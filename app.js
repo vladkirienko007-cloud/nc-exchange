@@ -214,12 +214,17 @@ function viewAsset(t) {
         <div class="chips" style="margin:12px 0 0">${rb('1h')}${rb('24h')}${rb('7d')}${rb('all')}</div>
         <div class="chart" id="chart"></div>
         <div class="stats">
-          <div class="stat"><div class="lbl">Фундаментальная цена</div><div class="val num">${U.money(a.fundamental)}</div>${d != null ? `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'рынок ниже на ' + U.pct(d, false) : 'рынок выше на ' + U.pct(-d, false)}</div>` : ''}</div>
+          <div class="stat"><div class="lbl">${a.type === 'crypto' ? 'Ценовой ориентир' : 'Фундаментальная цена'}</div><div class="val num">${U.money(a.fundamental)}</div>${d != null ? `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'рынок ниже на ' + U.pct(d, false) : 'рынок выше на ' + U.pct(-d, false)}</div>` : ''}</div>
+          ${a.type === 'crypto' ? `
+          <div class="stat"><div class="lbl">В обращении</div><div class="val num">${U.plain(a.circulating, 0)}</div>${a.maxSupply ? `<div class="small muted">из ${U.plain(a.maxSupply, 0)}</div>` : ''}</div>
+          <div class="stat"><div class="lbl">Активность сети</div><div class="val num up">${a.activity != null ? U.pct(a.activity, false) : '—'}</div>${a.adoption != null ? `<div class="small muted">базовое принятие ${U.pct(a.adoption, false)}</div>` : ''}</div>
+          <div class="stat"><div class="lbl">Рыночный риск</div><div class="val num">${a.risk != null ? U.pct(a.risk, false) : '—'}</div>${a.orderFlow != null ? `<div class="small muted">поток заявок ${U.pct(a.orderFlow, false)}</div>` : ''}</div>` : `
           <div class="stat"><div class="lbl">Выручка</div><div class="val num">${U.compact(a.revenue)}</div></div>
           <div class="stat"><div class="lbl">Чистая прибыль</div><div class="val num ${U.cls(a.profit)}">${U.compact(a.profit)}</div></div>
-          <div class="stat"><div class="lbl">Капитал компании</div><div class="val num">${U.compact(a.capital)}</div></div>
+          <div class="stat"><div class="lbl">Капитал компании</div><div class="val num">${U.compact(a.capital)}</div>${a.debt ? `<div class="small muted">долг ${U.compact(a.debt)}</div>` : ''}</div>`}
         </div>
         ${dv ? `<div class="dividend"><div class="up"><i class="ti ti-coins"></i> Отчёт №${esc(dv.report ?? '—')} · дивиденды ${U.money(dv.perShare)} на акцию</div>${dv.next ? `<div class="small muted">Следующий отчёт №${esc(dv.next)}</div>` : ''}</div>` : ''}
+        ${a.cycle ? `<div class="dividend" style="background:#1d1730;border-color:#3b2d63"><div style="color:#b9a4ff"><i class="ti ti-coins"></i> Цикл крипторынка №${esc(a.cycle.n ?? '—')}</div>${a.cycle.next ? `<div class="small muted">Следующее обновление: ${esc(a.cycle.next)}</div>` : ''}</div>` : ''}
         <button class="btn block fav-btn ${S.favs.has(t) ? 'on' : ''}" style="margin-top:12px" data-act="fav" data-t="${esc(t)}">
           <i class="ti ti-star"></i>${S.favs.has(t) ? 'В избранном — убрать' : 'Добавить в избранное'}</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -630,23 +635,32 @@ function openEditAsset(t) {
   const close = modal(`Данные компании · ${esc(t)}`, `
     <div class="row2"><div class="field"><label>Название</label><input class="input" id="e-name" value="${esc(a.name)}"></div>
     <div class="field"><label>Тип</label><select class="input" id="e-type"><option value="stock" ${a.type !== 'crypto' ? 'selected' : ''}>Акции</option><option value="crypto" ${a.type === 'crypto' ? 'selected' : ''}>Крипто</option></select></div></div>
+    ${a.type === 'crypto' ? `
+    <div class="row2">${f('e-fund', 'Ценовой ориентир', a.fundamental)}${f('e-circ', 'В обращении', a.circulating)}</div>
+    <div class="row2">${f('e-max', 'Всего монет', a.maxSupply)}${f('e-act', 'Активность сети, %', a.activity)}</div>
+    <div class="row2">${f('e-adop', 'Базовое принятие, %', a.adoption)}${f('e-risk', 'Рыночный риск, %', a.risk)}</div>
+    <div class="row2">${f('e-flow', 'Поток заявок, %', a.orderFlow)}${f('e-cyc', 'Цикл крипторынка №', a.cycle?.n)}</div>` : `
     <div class="row2">${f('e-fund', 'Фундаментальная цена', a.fundamental)}${f('e-rev', 'Выручка', a.revenue)}</div>
     <div class="row2">${f('e-prof', 'Чистая прибыль', a.profit)}${f('e-cap', 'Капитал компании', a.capital)}</div>
+    ${f('e-debt', 'Долг', a.debt)}
     <h3>Дивиденды</h3>
     <div class="row2">${f('e-rep', 'Номер отчёта', dv.report)}${f('e-div', 'На акцию, $', dv.perShare)}</div>
-    ${f('e-next', 'Следующий отчёт №', dv.next)}
+    ${f('e-next', 'Следующий отчёт №', dv.next)}`}
     <div style="display:flex;gap:8px;justify-content:space-between">
       ${S.group.owner === S.user.uid ? '<button class="btn danger" data-del>Удалить актив</button>' : '<span></span>'}
       <button class="btn primary" data-save>Сохранить</button>
     </div>`);
-  const num = id => { const v = $('#' + id, close.el).value; return v.trim() ? U.parseNum(v) : null; };
+  const num = id => { const el = $('#' + id, close.el); const v = el ? el.value : ''; return v.trim() ? U.parseNum(v) : null; };
   close.el.querySelector('[data-save]').addEventListener('click', async () => {
     const item = { ticker: t, name: $('#e-name', close.el).value.trim() || t, type: $('#e-type', close.el).value };
-    for (const [id, k] of [['e-fund', 'fundamental'], ['e-rev', 'revenue'], ['e-prof', 'profit'], ['e-cap', 'capital']]) {
+    for (const [id, k] of [['e-fund', 'fundamental'], ['e-rev', 'revenue'], ['e-prof', 'profit'], ['e-cap', 'capital'], ['e-debt', 'debt'],
+      ['e-circ', 'circulating'], ['e-max', 'maxSupply'], ['e-act', 'activity'], ['e-adop', 'adoption'], ['e-risk', 'risk'], ['e-flow', 'orderFlow']]) {
       const v = num(id); if (v != null) item[k] = v;
     }
     const rep = num('e-rep'), per = num('e-div'), next = num('e-next');
     if (rep != null || per != null || next != null) item.dividend = { report: rep, perShare: per, next };
+    const cyc = num('e-cyc');
+    if (cyc != null) item.cycle = { ...(a.cycle || {}), n: cyc };
     await store.saveSnapshot({ assets: [item] }, 'manual');
     close();
   });
@@ -764,6 +778,14 @@ function askNotify() {
 
 /* ---------------- распознавание ---------------- */
 
+// Показатели выбранного актива в окне проверки: [поле, подпись, знаков после запятой]
+const METRICS = [
+  ['fundamental', 'Фунд. цена / ориентир', 2], ['revenue', 'Выручка', 2], ['profit', 'Чистая прибыль', 2],
+  ['capital', 'Капитал', 2], ['debt', 'Долг', 2], ['circulating', 'В обращении', 0], ['maxSupply', 'Всего монет', 0],
+  ['activity', 'Активность сети, %', 1], ['adoption', 'Базовое принятие, %', 1], ['risk', 'Рыночный риск, %', 2],
+  ['orderFlow', 'Поток заявок, %', 2],
+];
+
 function openScan(file) {
   const close = modal('Распознать скриншот', `
     <div id="scan-step">
@@ -816,8 +838,8 @@ function openScan(file) {
       const warn = !old ? `<span class="warn small">${a.guess ? chk + ' тикер не прочитался, впиши его' : 'новый актив, проверь тикер'}</span>`
         : a.unsure?.includes('price') ? `<span class="warn small">${chk} проверь цену · было ${U.money(old.price)}</span>`
         : `<span class="small muted">было ${U.money(old.price)}</span>`;
-      const extra = [a.fundamental && 'фунд. ' + U.money(a.fundamental), a.revenue && 'показатели', a.dividend && 'дивиденды']
-        .filter(Boolean).join(' · ') + (['fundamental', 'revenue', 'profit', 'capital'].some(k => a.unsure?.includes(k)) ? ` <span class="warn">${chk} проверь в карточке</span>` : '');
+      const metrics = METRICS.filter(([k]) => a[k] != null);
+      const extra = [a.dividend && `отчёт №${a.dividend.report ?? '—'}, дивиденды ${U.money(a.dividend.perShare)}`, a.cycle && `цикл №${a.cycle.n ?? '—'}`].filter(Boolean).join(' · ');
       return `<div class="r"><input type="checkbox" checked data-i="${i}">
         <span style="min-width:0">${old ? `<b>${esc(a.ticker)}</b> <span class="muted small">${esc(old.name)}</span>`
           : `<input class="input" style="width:110px;display:inline-block${a.guess ? ';border-color:var(--yellow)' : ''}" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
@@ -827,7 +849,9 @@ function openScan(file) {
           </select></span>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="price" value="${a.price != null ? U.plain(a.price) : ''}"${bad('price')}>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="change" value="${a.change != null ? U.plain(a.change) : ''}" placeholder="изм. %"${bad('change')}>
-      </div>`;
+      </div>
+      ${metrics.length ? `<div class="metrics">${metrics.map(([k, label, d]) => `<label><span>${label}</span>
+        <input class="input num" inputmode="decimal" data-i="${i}" data-m="${k}" value="${U.plain(a[k], d)}"${bad(k)}></label>`).join('')}</div>` : ''}`;
     };
     const ec = res.economy;
     step.innerHTML = `
@@ -864,6 +888,11 @@ function openScan(file) {
         item.price = val(`input[data-i="${i}"][data-k="price"]`);
         item.change = val(`input[data-i="${i}"][data-k="change"]`);
         if (item.price == null) delete item.price;
+        close.el.querySelectorAll(`input[data-i="${i}"][data-m]`).forEach(inp => {
+          const v = inp.value.trim() ? U.parseNum(inp.value) : null;
+          if (inp.value.trim() && v == null) { fieldErr(inp, 'Не число'); bad = true; }
+          if (v == null) delete item[inp.dataset.m]; else item[inp.dataset.m] = v;
+        });
         out.push(item);
       });
       const indices = [];

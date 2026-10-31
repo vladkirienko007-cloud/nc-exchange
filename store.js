@@ -27,7 +27,8 @@ function randomId(n = 10) {
 // Слить новую запись цены с документом актива.
 function mergeAsset(old, item, user, at) {
   const a = { ...(old || {}), ticker: item.ticker };
-  for (const k of ['name', 'type', 'fundamental', 'revenue', 'profit', 'capital', 'dividend']) {
+  for (const k of ['name', 'type', 'fundamental', 'revenue', 'profit', 'capital', 'debt', 'dividend',
+    'circulating', 'maxSupply', 'activity', 'adoption', 'risk', 'orderFlow', 'cycle']) {
     if (item[k] !== undefined && item[k] !== null && item[k] !== '') a[k] = item[k];
   }
   if (!a.name) a.name = item.ticker;
