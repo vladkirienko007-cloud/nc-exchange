@@ -167,7 +167,19 @@ h3 { font-size: 13px; margin: 14px 0 8px; color: var(--muted); font-weight: 600;
 /* нижняя навигация на телефоне */
 .bottomnav { display: none; }
 @media (max-width: 760px) {
-  .shell { padding: 12px 12px 90px; }
+  /* отступы под «чёлку» и скруглённые углы iPhone */
+  .shell { padding: 0 max(12px, env(safe-area-inset-right)) 90px max(12px, env(safe-area-inset-left)); }
+  .topbar {
+    position: sticky; top: 0; z-index: 30; background: var(--bg);
+    margin: 0 -12px 12px; padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+    border-bottom: 1px solid var(--line); flex-wrap: nowrap;
+  }
+  .brand h1 { font-size: 16px; }
+  .brand .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .logo { width: 34px; height: 34px; font-size: 19px; }
+  .banner { margin-top: 10px; }
+  .overlay { padding-top: calc(12px + env(safe-area-inset-top)); }
+  .login { margin-top: calc(6vh + env(safe-area-inset-top)); }
   .tabs { display: none; }
   .bottomnav { display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 6px 0 calc(6px + env(safe-area-inset-bottom)); z-index: 40; }
   .bottomnav a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: var(--muted); text-decoration: none; font-weight: 600; }
