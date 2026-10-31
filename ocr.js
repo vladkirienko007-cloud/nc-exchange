@@ -15,6 +15,19 @@ function loadScript(src) {
   });
 }
 
+// Вторая модель — только английская, для строк списка: названия и тикеры там
+// латиницей, а русская модель путает их с кириллицей (NCBTC → МСВТС).
+let engPromise = null;
+async function getEngWorker() {
+  engPromise ||= (async () => {
+    await loadScript(TESSERACT);
+    const w = await window.Tesseract.createWorker('eng', 1);
+    await w.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    return w;
+  })();
+  try { return await engPromise; } catch (e) { engPromise = null; throw e; }
+}
+
 async function getWorker() {
   workerPromise ||= (async () => {
     await loadScript(TESSERACT);
@@ -54,23 +67,234 @@ async function preprocess(file, opt = {}) {
     d[i] = d[i + 1] = d[i + 2] = Math.min(255, s);
   }
   g.putImageData(img, 0, 0);
+  c.scale = scale;
   return c;
 }
 
-// Два прохода с разной обработкой: что не прочиталось в одном, часто читается в другом.
+// Синие квадратные плашки с инициалами (NC, PP, TR…) стоят слева от каждой строки
+// списка активов. Находим их, чтобы читать каждую строку отдельно: в общем тексте
+// страницы строки списка склеиваются с соседними колонками.
+async function findRows(file) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, 900 / bmp.width);
+  const W = Math.round(bmp.width * k), H = Math.round(bmp.height * k);
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.drawImage(bmp, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data;
+  const blue = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    blue[i] = b > 150 && b > r + 50 && b > gg + 30 ? 1 : 0;
+  }
+  const seen = new Uint8Array(W * H);
+  const tiles = [];
+  for (let i = 0; i < W * H; i++) {
+    if (!blue[i] || seen[i]) continue;
+    let x0 = W, y0 = H, x1 = 0, y1 = 0, n = 0;
+    const stack = [i];
+    seen[i] = 1;
+    while (stack.length) {
+      const p = stack.pop(), x = p % W, y = (p / W) | 0;
+      n++;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      for (const q of [p - 1, p + 1, p - W, p + W]) {
+        if (q >= 0 && q < W * H && blue[q] && !seen[q] && Math.abs((q % W) - x) <= 1) { seen[q] = 1; stack.push(q); }
+      }
+    }
+    const w = x1 - x0 + 1, h = y1 - y0 + 1;
+    // квадрат примерно 2–7% ширины скриншота, плотно залитый (внутри только белые буквы)
+    if (w > W * 0.015 && w < W * 0.08 && Math.abs(w - h) < Math.max(w, h) * 0.25 && n / (w * h) > 0.55) {
+      tiles.push({ x: x0 / k, y: y0 / k, w: w / k, h: h / k });
+    }
+  }
+  // строки списка — плашки одного размера в одной колонке
+  const rows = tiles.filter(t => tiles.filter(o => Math.abs(o.x - t.x) < t.w * 0.5 && Math.abs(o.w - t.w) < t.w * 0.25).length >= 2);
+  return rows.map(t => ({
+    left: t.x + t.w * 1.15, top: t.y - t.h * 0.12,
+    // ширина — до правого края карточки, без полосы прокрутки списка
+    width: Math.min(t.w * 4.15, bmp.width - t.x - t.w * 1.15), height: t.h * 1.25,
+  })).sort((a, b) => a.top - b.top);
+}
+
+// Вырезать строку списка, увеличить в k раз и перевести в чёрно-белое.
+function cropRow(bmp, r, k = 2.2) {
+  const c = document.createElement('canvas');
+  c.width = Math.round(r.width * k);
+  c.height = Math.round(r.height * k);
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(bmp, r.left, r.top, r.width, r.height, 0, 0, c.width, c.height);
+  const img = g.getImageData(0, 0, c.width, c.height);
+  const d = img.data;
+  // яркость по максимуму канала, инверсия: любой светлый текст становится тёмным на белом
+  for (let i = 0; i < d.length; i += 4) {
+    // три уровня: яркий текст — чёрный, серый (тикер) — тёмно-серый, фон — белый;
+    // полутона по краям букв убираем, иначе жирные цифры слипаются
+    const v = Math.max(d[i], d[i + 1], d[i + 2]);
+    const s = v >= 170 ? 0 : v >= 85 ? 40 : 255;
+    d[i] = d[i + 1] = d[i + 2] = s;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+// Разрезать строку списка на 4 куска по пустому месту между ними:
+//   [название]      [цена]
+//   [тикер · тип]   [процент]
+// Каждый кусок читается отдельно, цены и проценты — только цифрами.
+function splitRow(c) {
+  const W = c.width, H = c.height;
+  const g = c.getContext('2d');
+  const d = g.getImageData(0, 0, W, H).data;
+  const ink = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) ink[i] = d[i * 4] < 200 ? 1 : 0;
+  // рамки карточки и полосы — линии почти во всю ширину или высоту — не текст
+  for (let y = 0; y < H; y++) {
+    let n = 0; for (let x = 0; x < W; x++) n += ink[y * W + x];
+    if (n > W * 0.6) for (let x = 0; x < W; x++) ink[y * W + x] = 0;
+  }
+  for (let x = 0; x < W; x++) {
+    let n = 0; for (let y = 0; y < H; y++) n += ink[y * W + x];
+    if (n > H * 0.6) for (let y = 0; y < H; y++) ink[y * W + x] = 0;
+  }
+  // строки текста по вертикали
+  const runs = [];
+  let start = -1, blank = 0;
+  for (let y = 0; y <= H; y++) {
+    let n = 0; if (y < H) for (let x = 0; x < W; x++) n += ink[y * W + x];
+    if (n > 1) { if (start < 0) start = y; blank = 0; }
+    else if (start >= 0 && ++blank > H * 0.04) { runs.push([start, y - blank]); start = -1; blank = 0; }
+  }
+  if (start >= 0) runs.push([start, H - 1]);
+  const lines = runs.filter(([a, b]) => b - a > H * 0.06);
+  if (!lines.length) return null;
+  const band1 = lines[0], band2 = lines.length > 1 ? [lines[1][0], lines[lines.length - 1][1]] : null;
+  // правый кусок (цена/процент) отделён от левого пустым промежутком шире ~половины строки
+  // столбец с текстом; сплошная вертикальная полоса (край карточки, прокрутка) — не текст
+  const colInk = (x, y0, y1) => {
+    let n = 0; for (let y = y0; y <= y1; y++) n += ink[y * W + x];
+    return n > 0 && n < (y1 - y0 + 1) * 0.8;
+  };
+  const lastInk = ([y0, y1]) => { let x = W - 1; while (x > 0 && !colInk(x, y0, y1)) x--; return x; };
+  const splitX = ([y0, y1]) => {
+    let x = lastInk([y0, y1]);
+    const gapMin = Math.max(6, (y1 - y0) * 0.55);
+    let gap = 0;
+    for (; x > 0; x--) {
+      if (colInk(x, y0, y1)) gap = 0; else if (++gap >= gapMin) return x + gap;
+    }
+    return 0;
+  };
+  const cut = (x0, x1, [y0, y1]) => {
+    // правая граница — по последнему столбцу с текстом, без полосы справа
+    x1 = Math.min(x1, lastInk([y0, y1]) + 3);
+    const pad = 12, h = y1 - y0 + 1, w = x1 - x0;
+    if (w < 4 || h < 4) return null;
+    const o = document.createElement('canvas');
+    o.width = w + pad * 2; o.height = h + pad * 2;
+    const og = o.getContext('2d');
+    og.fillStyle = '#fff'; og.fillRect(0, 0, o.width, o.height);
+    og.drawImage(c, x0, y0, w, h, pad, pad, w, h);
+    return o;
+  };
+  const s1 = splitX(band1);
+  const parts = { name: cut(0, s1 || W, band1), price: s1 ? cut(s1, W, band1) : null };
+  if (band2) {
+    const s2 = splitX(band2);
+    parts.ticker = cut(0, s2 || W, band2);
+    parts.pct = s2 ? cut(s2, W, band2) : null;
+  }
+  return parts;
+}
+
+const WL = {
+  price: { tessedit_pageseg_mode: '7', tessedit_char_whitelist: '$0123456789,. ' },
+  pct: { tessedit_pageseg_mode: '7', tessedit_char_whitelist: '+-0123456789,.%' },
+  name: { tessedit_pageseg_mode: '7', tessedit_char_whitelist: '' },
+  ticker: { tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' },
+};
+
+// Цены в жирном шрифте NC Exchange Tesseract читает по-разному при разном увеличении
+// (5 ↔ 8, пропадает запятая) — цену читаем при нескольких увеличениях, потом голосуем.
+const PRICE_SCALES = [2.2, 2.8, 1.6];
+
+async function readRows(ew, bmp, rows, onStep) {
+  const parts = PRICE_SCALES.map(k => rows.map(r => splitRow(cropRow(bmp, r, k))));
+  const out = rows.map(() => ({ prices: [] }));
+  const total = rows.length * (PRICE_SCALES.length + 3);
+  let n = 0;
+  await ew.setParameters(WL.price);
+  for (const ps of parts) {
+    for (let i = 0; i < rows.length; i++) {
+      onStep(n++ / total);
+      if (!ps[i] || !ps[i].price) continue;
+      const { data } = await ew.recognize(ps[i].price);
+      out[i].prices.push(data.text.replace(/\s+/g, ' ').trim());
+    }
+  }
+  for (const k of ['pct', 'name', 'ticker']) {
+    await ew.setParameters(WL[k]);
+    for (let i = 0; i < rows.length; i++) {
+      onStep(n++ / total);
+      const p = parts[0][i];
+      if (!p || !p[k]) continue;
+      const { data } = await ew.recognize(p[k]);
+      out[i][k] = data.text.replace(/\s+/g, ' ').trim();
+    }
+  }
+  await ew.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  return out;
+}
+
+// Выбрать цену из прочтений: сначала ту, что встречается и на всей странице,
+// потом самую частую. Уверены, если совпала со страницей или с другим прочтением.
+function votePrice(texts, pagePrices) {
+  const vals = texts.map(t => t.replace(/^[^\d]*/, '').replace(/[^\d ,.]/g, '').trim()).filter(Boolean).map(t => readNum(t)).filter(Boolean);
+  if (!vals.length) return null;
+  const count = v => vals.filter(o => Math.abs(o.v - v) < 1e-6).length;
+  const inPage = vals.filter(o => pagePrices.has(o.v.toFixed(2)));
+  if (inPage.length) return { v: inPage[0].v, exact: true };
+  // без совпадений берём прочтение, больше всего похожее на остальные (370,45 среди 3720,48 и 370,48)
+  const close = v => vals.reduce((s, o) => s + similar(v.toFixed(2), o.v.toFixed(2)), 0);
+  const best = [...vals].sort((a, b) => count(b.v) - count(a.v) || close(b.v) - close(a.v) || b.exact - a.exact)[0];
+  return { v: best.v, exact: count(best.v) >= 2 && best.exact };
+}
+
+// Два прохода по всей странице с разной обработкой (что не прочиталось в одном, часто
+// читается в другом) и отдельное чтение каждой строки списка.
 export async function recognize(file, known = {}, onProgress = () => {}) {
   const w = await getWorker();
   const passes = [{ raw: false }, { raw: true }];
+  const steps = passes.length + 1;
   const texts = [];
+  let firstCanvas = null;
   for (let i = 0; i < passes.length; i++) {
-    progressCb = (msg, p) => onProgress(`${msg} (${i + 1}/${passes.length})`, (i + p) / passes.length);
+    progressCb = (msg, p) => onProgress(`${msg} (${i + 1}/${steps})`, (i + p) / steps);
     progressCb('Подготавливаю картинку…', 0);
     const canvas = await preprocess(file, passes[i]);
+    firstCanvas ||= canvas;
     const { data } = await w.recognize(canvas);
     texts.push(data.text);
   }
+  const results = texts.map(t => parse(t, known.assets));
+
+  const rows = await findRows(file);
+  const rowTexts = [];
+  if (rows.length) {
+    progressCb = () => {};
+    onProgress(`Читаю строки списка (${steps}/${steps})`, passes.length / steps);
+    const ew = await getEngWorker();
+    const bmp = await createImageBitmap(file);
+    const read = await readRows(ew, bmp, rows, p => onProgress(`Читаю строки списка (${steps}/${steps})`, (passes.length + p) / steps));
+    rowTexts.push(...read.map(r => [r.name, r.prices.join(' / '), r.ticker, r.pct].join(' | ')));
+    // все цены с запятой, прочитанные на странице целиком, — для сверки
+    const pagePrices = new Set(texts.flatMap(t => [...t.matchAll(DOLLAR)].map(m => readNum(m[1])).filter(x => x && x.exact).map(x => x.v.toFixed(2))));
+    results.push(parseRows(read, known.assets, pagePrices));
+  }
   onProgress('Разбираю цифры…', 1);
-  return { ...merge(texts.map(t => parse(t, known.assets)), known), text: texts.join('\n———\n') };
+  return { ...merge(results, known), text: texts.join('\n———\n') + '\n——— строки ———\n' + rowTexts.join('———\n') };
 }
 
 /* ---------------- разбор текста ---------------- */
@@ -105,8 +329,9 @@ function readPct(s) {
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '');
 
 // Tesseract с русской моделью путает латиницу с похожей кириллицей: РРВОР → PPBOP.
-const LOOKALIKE = { А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X', І: 'I' };
-const latin = s => String(s || '').replace(/[АВЕКМНОРСТУХІ]/g, ch => LOOKALIKE[ch]);
+const LOOKALIKE = { А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X', І: 'I', '№': 'N' };
+// "NC" в начале тикера OCR часто читает как МС / НС / №С
+const latin = s => String(s || '').replace(/[АВЕКМНОРСТУХІ№]/g, ch => LOOKALIKE[ch]).replace(/^(MC|HC|NG)(?=[A-Z]{2})/, 'NC');
 
 // Похожесть строк 0..1 (Левенштейн).
 export function similar(a, b) {
@@ -149,12 +374,19 @@ function matchName(name, known = []) {
 
 // Тикер под названием: "PPROP · Акции", "TRIG Arum", "РРВОР О Акция"
 function tickerIn(line) {
-  const m = /([A-ZА-Я][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–О0]?\s*(Акци|Акция|Крипт|Akuu|Kpunt|Arum|Axu)/.exec(line || '');
+  const m = /([A-ZА-Я№][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–О0]?\s*(Акци|Акция|Крипт|Akuu|Akyu|Axu|Arum|Kpunt|Kpun|Kpnt|Kpu)/.exec(line || '');
   if (!m) return null;
   const t = latin(m[1]);
   if (!/^[A-Z][A-Z0-9]+$/.test(t)) return null;
-  return { ticker: t, type: /крипт|kpunt/i.test(m[2]) ? 'crypto' : 'stock' };
+  return { ticker: t, type: /крипт|kp/i.test(m[2]) ? 'crypto' : 'stock' };
 }
+
+const inOrder = (t, name) => {
+  const s = (name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let j = 0;
+  for (const ch of s) if (ch === t[j]) j++;
+  return j === t.length;
+};
 
 // Временный тикер для нового актива, если настоящий не прочитался.
 const guessTicker = name => (name || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || null;
@@ -199,7 +431,7 @@ export function parse(text, known = []) {
   // 2. Выбранная акция в центре: "NZONE · NC Exchange  $221,28", ниже "NeucZone" и "+1,59%"
   let current = null;
   for (let i = 0; i < lines.length; i++) {
-    const m = /([A-ZА-Я][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–]?\s*NC\s*Exchange/.exec(lines[i]);
+    const m = /([A-ZА-Я№][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–]?\s*NC\s*Exchange/.exec(lines[i]);
     if (!m) continue;
     const t = latin(m[1]);
     const kn = byTicker(t);
@@ -219,7 +451,8 @@ export function parse(text, known = []) {
   let company = null;
   {
     const data = {};
-    const fields = [['fundamental', /Фундамент/i], ['revenue', /Выручк/i], ['profit', /прибыл/i], ['capital', /Капитал/i]];
+    // у крипты вместо фундаментальной цены — «Ценовой ориентир»
+    const fields = [['fundamental', /Фундамент|Ценов\S*\s*ориентир/i], ['revenue', /Выручк/i], ['profit', /прибыл/i], ['capital', /Капитал/i]];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       if (fields.some(([, re]) => re.test(l)) && !/\$/.test(l)) {
@@ -279,6 +512,36 @@ export function parse(text, known = []) {
   return { assets: [...assets.values()], indices, economy, current, company, lines };
 }
 
+// Строки списка, прочитанные по кускам: { name: 'NC Bitcoin', price: '$260 616,70',
+// ticker: 'NCBTC · Kpuntoaktne', pct: '+0,34%' }
+export function parseRows(rows, known = [], pagePrices = new Set()) {
+  const assets = [];
+  for (const r of rows) {
+    const words = (r.name || '').replace(/\$.*/, '').replace(/[^A-Za-z0-9 .&'-]/g, ' ').split(/\s+/).filter(w => /[A-Za-z]/.test(w));
+    while (words.length && !/^[A-Z]/.test(words[0])) words.shift();
+    const name = words.join(' ').replace(/\.+$/, '').trim();
+    if (name.replace(/[^A-Za-z]/g, '').length < 3) continue;
+    const price = votePrice(r.prices || [], pagePrices);
+    if (!price) continue;
+    // тикер — первое слово капсом; тип — по слову после точки, если прочиталось
+    const tm = /\b([A-Z][A-Z0-9]{1,9})\b/.exec(latin(r.ticker || ''));
+    // мелкий серый тикер часто читается мусором; верим, только если его буквы по порядку
+    // есть в названии: NCBTC ⊂ "NC Bitcoin", NZONE ⊂ "NeucZone"
+    const tk = tm && tm[1].length >= 3 && inOrder(tm[1], name) ? tm[1] : null;
+    const type = /kp|крипт/i.test(r.ticker || '') ? 'crypto' : /ak|акци/i.test(r.ticker || '') ? 'stock' : null;
+    const kn = matchName(name, known) || (tk && known.find(a => a.ticker === tk));
+    const ticker = kn ? kn.ticker : tk || guessTicker(name);
+    if (!ticker) continue;
+    const change = readPct(r.pct || '');
+    const a = { ticker, exact: { price: price.exact }, price: price.v, guess: !kn && !tk };
+    if (change) { a.change = change.v; a.exact.change = change.exact; }
+    if (type) a.type = type;
+    if (!kn) a.name = name;
+    assets.push(a);
+  }
+  return { assets, indices: [], economy: null, current: null, company: null, lines: rows.map(r => r.ticker || '') };
+}
+
 // Свести результаты нескольких проходов. Где проходы расходятся — берём
 // значение с видимой запятой, потом ближайшее к прошлому, и помечаем «проверь».
 function pick(cands, ref) {
@@ -286,7 +549,10 @@ function pick(cands, ref) {
   if (!cands.length) return null;
   const near = v => !ref || Math.abs(v / ref - 1) < 0.3; // скачок больше 30% — подозрительно
   const agree = cands.find(c => cands.some(o => o !== c && Math.abs(o.v - c.v) < 1e-6));
-  if (agree) return { v: agree.v, sure: near(agree.v) };
+  if (agree && near(agree.v)) return { v: agree.v, sure: true };
+  // совпавшее значение далеко от прошлого, а другое прочтение рядом — вероятнее второе
+  const plausible = ref && cands.filter(c => near(c.v)).sort((a, b) => Math.abs(a.v - ref) - Math.abs(b.v - ref))[0];
+  if (agree) return plausible ? { v: plausible.v, sure: false } : { v: agree.v, sure: false };
   const same = ref != null && cands.find(c => Math.abs(c.v - ref) < 1e-6);
   if (same) return { v: same.v, sure: true }; // цена не изменилась
   let pool = cands.filter(c => c.exact);
@@ -320,9 +586,11 @@ export function merge(results, known = {}) {
   if (current) for (const r of results) if (r.company) all.push({ ticker: current, ...r.company });
   const clusters = [];
   for (const x of all) {
-    const c = x.name
+    // угаданная запись с той же ценой, что у уже найденной — это она же, прочитанная криво
+    const twin = x.guess && x.price != null && clusters.find(c => c.list.some(o => !o.guess && o.price === x.price));
+    const c = twin || (x.name
       ? clusters.find(c => c.name && similar(norm(c.name), norm(x.name)) >= 0.7)
-      : clusters.find(c => !c.name && c.list[0].ticker === x.ticker);
+      : clusters.find(c => !c.name && c.list[0].ticker === x.ticker));
     if (c) c.list.push(x); else clusters.push({ name: x.name, list: [x] });
   }
   // правдоподобный тикер похож на начало названия или на его инициалы
@@ -374,4 +642,4 @@ export function merge(results, known = {}) {
   return { assets: out, indices, economy, pageType };
 }
 
-export const _debug = { preprocess, getWorker };
+export const _debug = { preprocess, getWorker, getEngWorker, findRows, cropRow, splitRow };
