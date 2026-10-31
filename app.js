@@ -162,7 +162,7 @@ function assetRow(a) {
   const stale = a.updatedAt && Date.now() - a.updatedAt > U.STALE_MS;
   const sel = S.selecting && S.sel.has(a.ticker);
   return `<div class="row ${sel ? 'selected' : hit ? 'alerted' : d > 0 ? 'under' : ''}" data-act="${S.selecting ? 'toggle-sel' : 'open'}" data-t="${esc(a.ticker)}">
-    <div class="asset-name">${tileFor(a)}<div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${esc(a.ticker)} · ${a.type === 'crypto' ? 'Крипто' : 'Акции'} ${alert ? '<i class="ti ti-bell warn"></i>' : ''}</div></div></div>
+    <div class="asset-name">${tileFor(a)}<div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${esc(a.ticker)} · ${a.type === 'crypto' ? 'Крипто' : 'Акции'} ${S.favs.has(a.ticker) ? '<i class="ti ti-star warn"></i>' : ''}${alert ? '<i class="ti ti-bell warn"></i>' : ''}</div></div></div>
     <div class="price num c-price">${U.money(a.price)}</div>
     <div class="num c-change ${U.cls(a.change)}">${U.pct(a.change)}</div>
     <div class="num c-fund">${a.fundamental ? U.money(a.fundamental) + `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'ниже на ' + U.pct(d, false) : 'выше на ' + U.pct(-d, false)}</div>` : '<span class="muted">—</span>'}</div>
@@ -220,7 +220,9 @@ function viewAsset(t) {
           <div class="stat"><div class="lbl">Капитал компании</div><div class="val num">${U.compact(a.capital)}</div></div>
         </div>
         ${dv ? `<div class="dividend"><div class="up"><i class="ti ti-coins"></i> Отчёт №${esc(dv.report ?? '—')} · дивиденды ${U.money(dv.perShare)} на акцию</div>${dv.next ? `<div class="small muted">Следующий отчёт №${esc(dv.next)}</div>` : ''}</div>` : ''}
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn block fav-btn ${S.favs.has(t) ? 'on' : ''}" style="margin-top:12px" data-act="fav" data-t="${esc(t)}">
+          <i class="ti ti-star"></i>${S.favs.has(t) ? 'В избранном — убрать' : 'Добавить в избранное'}</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
           <button class="btn" data-act="price-one" data-t="${esc(t)}"><i class="ti ti-edit"></i>Новая цена</button>
           <button class="btn" data-act="edit-asset" data-t="${esc(t)}"><i class="ti ti-building"></i>Данные компании</button>
           ${isOwner() ? `<button class="btn danger" data-act="delete-asset" data-t="${esc(t)}"><i class="ti ti-trash"></i>Удалить</button>` : ''}
@@ -896,7 +898,9 @@ document.addEventListener('click', async e => {
       case 'fav':
         e.stopPropagation();
         S.favs.has(t) ? S.favs.delete(t) : S.favs.add(t);
-        lsSet('ncx-favs', [...S.favs]); render(); break;
+        lsSet('ncx-favs', [...S.favs]); render();
+        if (route().view === 'asset') toast(S.favs.has(t) ? '<i class="ti ti-star warn"></i> Добавлено в избранное' : 'Убрано из избранного');
+        break;
       case 'filter': S.filter = el.dataset.f; lsSet('ncx-filter', S.filter); render(); break;
       case 'range': S.range = el.dataset.r; render(); break;
       case 'manual': openManual(); break;

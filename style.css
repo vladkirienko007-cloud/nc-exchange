@@ -57,6 +57,7 @@ button, input, select { font: inherit; color: inherit; }
 .btn.ghost { border-color: transparent; }
 .btn.icon { padding: 8px; }
 .btn.block { width: 100%; }
+.fav-btn.on { color: var(--yellow); border-color: #5a4518; background: var(--yellow-bg); }
 .btn i { font-size: 17px; }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
