@@ -178,13 +178,17 @@ function createDemoStore() {
 
 const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
 
+export const LOGIN_RE = /^[a-zA-Z0-9_-]{3,20}$/;
+// .invalid — зарезервированный домен, писем туда не бывает
+const loginEmail = login => `${login.toLowerCase()}@login.nc-exchange.invalid`;
+
 function authError(e) {
   const m = {
-    'auth/invalid-email': 'Почта написана с ошибкой.',
-    'auth/invalid-credential': 'Неверная почта или пароль.',
-    'auth/wrong-password': 'Неверная почта или пароль.',
-    'auth/user-not-found': 'Такой почты нет. Нажми «Создать аккаунт».',
-    'auth/email-already-in-use': 'На эту почту уже есть аккаунт. Нажми «Войти».',
+    'auth/invalid-email': 'Логин: только латиница, цифры, _ и -, от 3 до 20 символов.',
+    'auth/invalid-credential': 'Неверный логин или пароль.',
+    'auth/wrong-password': 'Неверный логин или пароль.',
+    'auth/user-not-found': 'Такого логина нет. Нажми «Создать аккаунт».',
+    'auth/email-already-in-use': 'Этот логин уже занят. Придумай другой или нажми «Войти».',
     'auth/weak-password': 'Пароль слишком короткий, нужно хотя бы 6 символов.',
     'auth/too-many-requests': 'Слишком много попыток. Подожди немного и попробуй снова.',
     'auth/network-request-failed': 'Нет связи с сервером. Проверь интернет или VPN.',
@@ -269,21 +273,19 @@ async function createFirebaseStore() {
         throw e;
       }
     },
-    // Вход по почте: без всплывающих окон и сторонних страниц — работает в Safari на iPhone.
-    async signInEmail(email, password) {
-      try { await A.signInWithEmailAndPassword(auth, email, password); }
+    // Вход по логину и паролю: без всплывающих окон и сторонних страниц — работает в
+    // Safari на iPhone. Firebase умеет только почту, поэтому логин превращаем в
+    // служебный адрес, который никуда не ведёт.
+    async signInLogin(login, password) {
+      try { await A.signInWithEmailAndPassword(auth, loginEmail(login), password); }
       catch (e) { throw new Error(authError(e)); }
     },
-    async signUpEmail(email, password, name) {
+    async signUpLogin(login, password) {
       try {
-        const cred = await A.createUserWithEmailAndPassword(auth, email, password);
-        await A.updateProfile(cred.user, { displayName: name });
-        localStorage.setItem('ncx-name', name);
+        const cred = await A.createUserWithEmailAndPassword(auth, loginEmail(login), password);
+        await A.updateProfile(cred.user, { displayName: login });
+        localStorage.setItem('ncx-name', login);
       } catch (e) { throw new Error(authError(e)); }
-    },
-    async resetPassword(email) {
-      try { await A.sendPasswordResetEmail(auth, email); }
-      catch (e) { throw new Error(authError(e)); }
     },
     async signOut() { localStorage.removeItem('ncx-group'); await A.signOut(auth); },
     async createGroup(name) {

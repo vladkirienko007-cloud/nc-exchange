@@ -1,4 +1,4 @@
-import { createStore, DEMO } from './store.js';
+import { createStore, DEMO, LOGIN_RE } from './store.js';
 import * as U from './util.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -438,32 +438,30 @@ function renderLogin(err, mode = 'in') {
     <div class="logo"><i class="ti ti-chart-line"></i></div>
     <h2 style="font-size:20px">Общая биржа</h2>
     <p class="muted">Общая таблица цен NC Exchange для тебя и друзей. Войди, чтобы видеть цены и свой портфель.</p>
-    <form id="email-form" style="text-align:left" novalidate>
-      ${up ? '<div class="field"><label>Ник в таблице</label><input class="input" id="l-name" maxlength="24" autocomplete="nickname" placeholder="Vlad_Kir"></div>' : ''}
-      <div class="field"><label>Почта</label><input class="input" id="l-email" type="email" autocomplete="email" inputmode="email" placeholder="name@mail.ru"></div>
+    <form id="login-form" style="text-align:left" novalidate>
+      <div class="field"><label>Логин</label><input class="input" id="l-login" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="20" placeholder="Vlad_Kir"></div>
       <div class="field"><label>Пароль</label><input class="input" id="l-pass" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" placeholder="${up ? 'не короче 6 символов' : ''}"></div>
+      ${up ? '<div class="field"><label>Пароль ещё раз</label><input class="input" id="l-pass2" type="password" autocomplete="new-password"></div><div class="hint" style="margin-bottom:10px">Логин — латиница, цифры, _ и -. Запомни пароль: восстановить его без почты нельзя.</div>' : ''}
       <button class="btn primary block" type="submit">${up ? 'Создать аккаунт' : 'Войти'}</button>
     </form>
-    <div style="display:flex;justify-content:space-between;margin-top:10px">
-      <button class="btn ghost small" data-act="login-mode" data-mode="${up ? 'in' : 'up'}">${up ? 'Уже есть аккаунт' : 'Создать аккаунт'}</button>
-      ${up ? '' : '<button class="btn ghost small" data-act="reset-pass">Забыл пароль</button>'}
+    <div style="margin-top:10px">
+      <button class="btn ghost small" data-act="login-mode" data-mode="${up ? 'in' : 'up'}">${up ? 'Уже есть аккаунт — войти' : 'Нет аккаунта? Создать'}</button>
     </div>
     <div class="err" id="l-err">${esc(err || '')}</div>
     <div class="hint" style="margin:16px 0 8px">или</div>
     <button class="btn block" data-act="signin"><i class="ti ti-brand-google"></i>Войти через Google</button>
-    <div class="hint" style="margin-top:8px">На iPhone в Safari вход через Google может не открыться — входи по почте.</div>
+    <div class="hint" style="margin-top:8px">На iPhone в Safari вход через Google может не открыться — входи по логину.</div>
   </div>`;
-  $('#email-form').addEventListener('submit', async e => {
+  $('#login-form').addEventListener('submit', async e => {
     e.preventDefault();
-    const email = $('#l-email').value.trim(), pass = $('#l-pass').value;
-    const name = up ? $('#l-name').value.trim() : '';
-    if (up && !name) return fieldErr($('#l-name'), 'Введи ник');
-    if (!/^\S+@\S+\.\S+$/.test(email)) return fieldErr($('#l-email'), 'Введи почту');
+    const login = $('#l-login').value.trim(), pass = $('#l-pass').value;
+    if (!LOGIN_RE.test(login)) return fieldErr($('#l-login'), 'Латиница, цифры, _ и -, от 3 до 20 символов');
     if (pass.length < 6) return fieldErr($('#l-pass'), 'Не короче 6 символов');
+    if (up && $('#l-pass2').value !== pass) return fieldErr($('#l-pass2'), 'Пароли не совпадают');
     const btn = e.target.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      if (up) await store.signUpEmail(email, pass, name); else await store.signInEmail(email, pass);
+      if (up) await store.signUpLogin(login, pass); else await store.signInLogin(login, pass);
       location.reload();
     } catch (err) {
       btn.disabled = false;
@@ -961,14 +959,6 @@ document.addEventListener('click', async e => {
         catch (err) { const e2 = $('#l-err'); if (e2) e2.textContent = err.message; else throw err; }
         break;
       case 'login-mode': renderLogin('', el.dataset.mode); break;
-      case 'reset-pass': {
-        const email = $('#l-email').value.trim();
-        if (!/^\S+@\S+\.\S+$/.test(email)) return fieldErr($('#l-email'), 'Впиши почту, на неё придёт ссылка');
-        await store.resetPassword(email);
-        $('#l-err').textContent = '';
-        toast('Письмо для смены пароля отправлено на ' + esc(email));
-        break;
-      }
       case 'signout': await store.signOut(); location.reload(); break;
       case 'create-group': {
         const name = $('#gname').value.trim();
