@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// Общие цены видят и меняют только участники группы.
+// Сделки и сигналы каждого игрока видит только он сам.
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null; }
+    // Участник = создатель группы принял его заявку (approved == true).
+    function isMember(g) {
+      return signedIn() && get(/databases/$(db)/documents/groups/$(g)/members/$(request.auth.uid)).data.approved == true;
+    }
+    function isOwner(g) {
+      return signedIn() && get(/databases/$(db)/documents/groups/$(g)).data.owner == request.auth.uid;
+    }
+
+    match /groups/{g} {
+      // get по точному id (ссылка-приглашение), перечислять группы нельзя
+      allow get: if signedIn();
+      allow create: if signedIn() && request.resource.data.owner == request.auth.uid;
+      allow update: if isMember(g);
+
+      match /members/{uid} {
+        allow read: if isMember(g) || (signedIn() && uid == request.auth.uid);
+        // Сам себя можно только записать в заявку; принять может только создатель.
+        allow create: if signedIn() && uid == request.auth.uid
+          && (request.resource.data.approved == false || isOwner(g));
+        allow update: if isOwner(g) || (signedIn() && uid == request.auth.uid
+          && request.resource.data.get('approved', false) == resource.data.get('approved', false));
+        allow delete: if isOwner(g) || (signedIn() && uid == request.auth.uid);
+      }
+      match /assets/{t} {
+        allow read, create, update: if isMember(g);
+        allow delete: if isOwner(g);
+        match /history/{h} {
+          allow read, create: if isMember(g);
+          allow delete: if isMember(g) && (resource.data.uid == request.auth.uid || isOwner(g));
+        }
+      }
+      match /indices/{i} {
+        allow read, write: if isMember(g);
+      }
+    }
+
+    match /users/{uid}/{rest=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+  }
+}
