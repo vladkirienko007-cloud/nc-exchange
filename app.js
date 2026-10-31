@@ -478,6 +478,11 @@ function openManual() {
         <input class="input num" inputmode="decimal" data-t="${esc(a.ticker)}" data-k="change" placeholder="изм. %">
       </div>`).join('')}
     </div>
+    <h3>Экономика</h3>
+    <div class="row2">
+      <select class="input" id="e-status">${['', 'Рост', 'Стабильность', 'Спад', 'Кризис'].map(s => `<option value="${s}" ${(S.group.economy?.status || '') === s ? 'selected' : ''}>${s || 'не менять'}</option>`).join('')}</select>
+      <div class="row2"><input class="input num" id="e-dem" inputmode="decimal" placeholder="спрос %"><input class="input num" id="e-cost" inputmode="decimal" placeholder="расходы %"></div>
+    </div>
     <h3>Новый актив</h3>
     <div class="row2"><input class="input" id="n-ticker" placeholder="Тикер, например NCBANK" maxlength="10"><input class="input" id="n-name" placeholder="Название"></div>
     <div class="row2" style="margin-top:8px"><select class="input" id="n-type"><option value="stock">Акции</option><option value="crypto">Крипто</option></select><input class="input num" id="n-price" inputmode="decimal" placeholder="Цена"></div>
@@ -499,11 +504,21 @@ function openManual() {
       else if (np.value.trim() && !(price > 0)) { fieldErr(np, 'Не число'); bad = true; }
       else items[ticker] = { ticker, name: $('#n-name', close.el).value.trim() || ticker, type: $('#n-type', close.el).value, price };
     }
+    let economy = null;
+    const st = $('#e-status', close.el).value;
+    for (const [id, k] of [['e-dem', 'demand'], ['e-cost', 'costs']]) {
+      const inp = $('#' + id, close.el);
+      if (!inp.value.trim()) continue;
+      const v = U.parseNum(inp.value);
+      if (v == null) { fieldErr(inp, 'Не число'); bad = true; continue; }
+      (economy ||= {})[k] = v;
+    }
+    if (st) (economy ||= {}).status = st;
     if (bad) return;
     const list = Object.values(items).filter(i => i.price != null || !S.assets.some(a => a.ticker === i.ticker));
-    if (!list.length) return toast('Ничего не введено');
+    if (!list.length && !economy) return toast('Ничего не введено');
     for (const i of list) if (i.price == null) delete i.price;
-    await store.saveSnapshot({ assets: list }, 'manual');
+    await store.saveSnapshot({ assets: list, economy: economy && { ...(S.group.economy || {}), ...economy } }, 'manual');
     close();
     toast(`<i class="ti ti-check up"></i> Сохранено: ${list.length}`);
   });
@@ -720,14 +735,14 @@ function openScan(file) {
     const rowA = (a, i) => {
       const old = known[a.ticker];
       const bad = k => (a.unsure || []).includes(k) ? ' style="border-color:var(--yellow)"' : '';
-      const warn = !old ? '<span class="warn small">новый актив, проверь тикер</span>'
+      const warn = !old ? `<span class="warn small">${a.guess ? chk + ' тикер не прочитался, впиши его' : 'новый актив, проверь тикер'}</span>`
         : a.unsure?.includes('price') ? `<span class="warn small">${chk} проверь цену · было ${U.money(old.price)}</span>`
         : `<span class="small muted">было ${U.money(old.price)}</span>`;
       const extra = [a.fundamental && 'фунд. ' + U.money(a.fundamental), a.revenue && 'показатели', a.dividend && 'дивиденды']
         .filter(Boolean).join(' · ') + (['fundamental', 'revenue', 'profit', 'capital'].some(k => a.unsure?.includes(k)) ? ` <span class="warn">${chk} проверь в карточке</span>` : '');
       return `<div class="r"><input type="checkbox" checked data-i="${i}">
         <span style="min-width:0">${old ? `<b>${esc(a.ticker)}</b> <span class="muted small">${esc(old.name)}</span>`
-          : `<input class="input" style="width:110px;display:inline-block" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
+          : `<input class="input" style="width:110px;display:inline-block${a.guess ? ';border-color:var(--yellow)' : ''}" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
           <div>${warn}${extra ? ` <span class="small muted">· ${extra}</span>` : ''}</div></span>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="price" value="${a.price != null ? U.plain(a.price) : ''}"${bad('price')}>
         <input class="input num" inputmode="decimal" data-i="${i}" data-k="change" value="${a.change != null ? U.plain(a.change) : ''}" placeholder="изм. %"${bad('change')}>
@@ -757,7 +772,8 @@ function openScan(file) {
       };
       res.assets.forEach((a, i) => {
         if (!close.el.querySelector(`input[type=checkbox][data-i="${i}"]`).checked) return;
-        const { unsure, ...item } = a;
+        const { unsure, guess, ...item } = a;
+        if (known[a.ticker]) delete item.name; // название известной акции не трогаем — OCR его искажает
         const ti = close.el.querySelector(`input[data-i="${i}"][data-k="ticker"]`);
         if (ti) {
           item.ticker = ti.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -790,6 +806,7 @@ function openScan(file) {
 /* ---------------- действия ---------------- */
 
 document.addEventListener('click', async e => {
+  if (e.target.classList.contains('preview-img')) return window.open(e.target.src, '_blank');
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const { act, t } = el.dataset;

@@ -91,7 +91,6 @@ export function readNum(s, cents = true) {
 
 const DOLLAR = /\$\s?(\d+(?:[  ]\d+)*(?:[.,]\d{1,2})?)/g;
 const PCT = /([+\-−–*«“‹^])?\s?(\d{1,3}(?:[.,]\d{1,2})?)\s?%/;
-const TICKER_LINE = /\b([A-Z][A-Z0-9]{1,9})\s*[·•.,:\-—]\s*(Акци|Крипт|Akuu|Kpunt|Axu)/i;
 
 function readPct(s) {
   const m = PCT.exec(s || '');
@@ -105,21 +104,60 @@ function readPct(s) {
 
 const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '');
 
-// Найти известный актив по названию из строки (с учётом обрезки "San Andreas ...").
-function matchName(text, known = []) {
-  const words = text.replace(/[^A-Za-z0-9 .&'-]/g, ' ').split(/\s+/).filter(w => /[A-Za-z]{2,}/.test(w));
-  for (let k = Math.min(4, words.length); k >= 1; k--) {
-    const cand = norm(words.slice(-k).join(''));
-    if (cand.length < 4) continue;
-    for (const a of known) {
-      const n = norm(a.name), t = norm(a.ticker);
-      if (cand === n || cand === t || (cand.length >= 6 && n.startsWith(cand)) || (n.length >= 6 && cand.startsWith(n))) {
-        return { ticker: a.ticker, name: words.slice(-k).join(' ') };
-      }
+// Tesseract с русской моделью путает латиницу с похожей кириллицей: РРВОР → PPBOP.
+const LOOKALIKE = { А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X', І: 'I' };
+const latin = s => String(s || '').replace(/[АВЕКМНОРСТУХІ]/g, ch => LOOKALIKE[ch]);
+
+// Похожесть строк 0..1 (Левенштейн).
+export function similar(a, b) {
+  if (!a || !b) return 0;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     }
   }
-  return null;
+  return 1 - d[a.length][b.length] / Math.max(a.length, b.length);
 }
+
+// Название из строки списка: "|  5 | Pacific Properti.. $472.28" → "Pacific Properti"
+function nameFrom(before) {
+  const words = before.replace(/[^A-Za-z .&'-]/g, ' ').split(/\s+/).filter(w => /[A-Za-z]{2,}/.test(w));
+  while (words.length && !/^[A-Z]/.test(words[0])) words.shift(); // мусор слева от названия
+  // хвост из тикера капсом ("NC Fuel NCFUEL") отрезаем
+  while (words.length > 1 && /^[A-Z]{3,}$/.test(words[words.length - 1])) words.pop();
+  const name = words.join(' ').replace(/\.+$/, '').trim();
+  // у настоящих названий есть слово со строчными буквами: "NC Fuel", "All Road"
+  return /[A-Z][a-z]{2,}/.test(name) ? name : null;
+}
+
+// Найти известный актив по названию (учитывая обрезку "Pacific Properti.." и ошибки OCR).
+function matchName(name, known = []) {
+  const cand = norm(name);
+  if (cand.length < 4) return null;
+  let best = null;
+  for (const a of known) {
+    const n = norm(a.name);
+    if (cand === n || cand === norm(a.ticker) || (n.length >= 5 && cand.includes(n))) return a;
+    // название в игре обрезается, сравниваем с началом полного
+    const s = Math.max(similar(cand, n), cand.length >= 6 ? similar(cand, n.slice(0, cand.length)) : 0);
+    if (s >= 0.75 && (!best || s > best.s)) best = { s, a };
+  }
+  return best && best.a;
+}
+
+// Тикер под названием: "PPROP · Акции", "TRIG Arum", "РРВОР О Акция"
+function tickerIn(line) {
+  const m = /([A-ZА-Я][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–О0]?\s*(Акци|Акция|Крипт|Akuu|Kpunt|Arum|Axu)/.exec(line || '');
+  if (!m) return null;
+  const t = latin(m[1]);
+  if (!/^[A-Z][A-Z0-9]+$/.test(t)) return null;
+  return { ticker: t, type: /крипт|kpunt/i.test(m[2]) ? 'crypto' : 'stock' };
+}
+
+// Временный тикер для нового актива, если настоящий не прочитался.
+const guessTicker = name => (name || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || null;
 
 export function parse(text, known = []) {
   const lines = text.split('\n').map(l => l.replace(/[ \t]{2,}/g, '  ').trim()).filter(Boolean);
@@ -135,38 +173,51 @@ export function parse(text, known = []) {
     assets.set(ticker, a);
   };
 
-  // 1. Список слева: "NC Fuel $285,98" и под ним "NCFUEL · Акции +2,37%"
+  const byTicker = t => known.find(a => a.ticker === t)
+    || known.map(a => ({ a, s: similar(a.ticker, t) })).filter(x => x.s >= 0.6).sort((x, y) => y.s - x.s)[0]?.a;
+
+  // 1. Список слева: "Pacific Properti.. $472,28" и под ним "PPROP · Акции +1,21%"
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     const dollars = [...l.matchAll(DOLLAR)];
-    if (dollars.length !== 1 || /NC\s*Exchange|Ориент|Комисс|сч[её]т|портфел|заявк/i.test(l)) continue;
-    const before = l.slice(0, dollars[0].index);
-    const byName = matchName(before, known);
-    const next = lines[i + 1] || '';
-    const tn = TICKER_LINE.exec(next) || TICKER_LINE.exec(before);
-    const ticker = byName?.ticker || (tn && tn[1]);
+    if (dollars.length !== 1 || /NC\s*Exchange|Ориент|Комисс|сч[её]т|счет|портфел|заявк|Доступ|Фундамент/i.test(l)) continue;
+    const name = nameFrom(l.slice(0, dollars[0].index));
+    if (!name) continue; // цена без названия: подписи графика и т. п.
+    const tn = tickerIn(lines[i + 1]) || tickerIn(l);
+    const kn = matchName(name, known) || (tn && byTicker(tn.ticker));
+    const ticker = kn ? kn.ticker : tn ? tn.ticker : guessTicker(name);
     if (!ticker) continue;
     put(ticker, {
       price: readNum(dollars[0][1]),
-      change: readPct(l.slice(dollars[0].index)) || readPct(next),
-      type: tn ? (/крипт|kpunt/i.test(tn[2]) ? 'crypto' : 'stock') : null,
-      name: byName ? null : before.replace(/[^A-Za-z0-9 .&'-]/g, ' ').trim().split(/\s{2,}/).pop() || null,
+      change: readPct(l.slice(dollars[0].index)) || readPct(lines[i + 1]),
+      type: tn ? tn.type : null,
+      name: kn ? null : name,
+      guess: !kn && !tn,
     });
   }
 
-  // 2. Выбранная акция в центре: "NCFUEL · NC Exchange" + показатели компании
+  // 2. Выбранная акция в центре: "NZONE · NC Exchange  $221,28", ниже "NeucZone" и "+1,59%"
   let current = null;
-  for (const l of lines) {
-    const m = /\b([A-Z][A-Z0-9]{2,9})\s*[·•.,:\-—]?\s*NC\s*Exchange/.exec(l);
-    if (m) { current = m[1]; break; }
+  for (let i = 0; i < lines.length; i++) {
+    const m = /([A-ZА-Я][A-ZА-Я0-9]{1,9})\s*[·•.,:\-—–]?\s*NC\s*Exchange/.exec(lines[i]);
+    if (!m) continue;
+    const t = latin(m[1]);
+    const kn = byTicker(t);
+    current = kn ? kn.ticker : t;
+    const rest = [lines[i].slice(m.index + m[0].length), lines[i + 1] || '', lines[i + 2] || ''];
+    const price = rest.map(s => [...s.matchAll(DOLLAR)][0]).find(Boolean);
+    const nm = [lines[i + 1], lines[i + 2]].map(s => (s || '').replace(/\$.*/, '').match(/([A-Z][A-Za-z0-9&'-]+(?: [A-Z][A-Za-z0-9&'-]+){0,3})\s*$/)).find(Boolean);
+    put(current, {
+      price: price ? readNum(price[1]) : null,
+      change: rest.concat(lines[i + 3] || '').map(readPct).find(Boolean) || null,
+      name: kn || !nm ? null : nm[1],
+    });
+    break;
   }
-  if (current && known.length && !known.some(a => a.ticker === current)) {
-    // OCR исказил тикер (NCFLEL) — возьмём самый похожий из известных
-    const best = known.map(a => ({ t: a.ticker, d: [...a.ticker].filter((ch, i) => ch !== current[i]).length + Math.abs(a.ticker.length - current.length) }))
-      .sort((x, y) => x.d - y.d)[0];
-    if (best && best.d <= 2) current = best.t;
-  }
-  if (current) {
+  // Показатели выбранной компании. Шапка с тикером могла не прочитаться в этом
+  // проходе — тогда тикер возьмём из другого прохода (см. merge).
+  let company = null;
+  {
     const data = {};
     const fields = [['fundamental', /Фундамент/i], ['revenue', /Выручк/i], ['profit', /прибыл/i], ['capital', /Капитал/i]];
     for (let i = 0; i < lines.length; i++) {
@@ -176,7 +227,9 @@ export function parse(text, known = []) {
         const heads = fields.filter(([, re]) => re.test(l)).map(([k]) => k);
         for (const nl of [lines[i + 1], lines[i + 2]]) {
           const vals = [...(nl || '').matchAll(DOLLAR)].map(m => readNum(m[1]));
-          if (vals.length >= heads.length) { heads.forEach((k, j) => { if (vals[j]) data[k] = vals[j]; }); break; }
+          if (vals.length === heads.length) { heads.forEach((k, j) => { if (vals[j]) data[k] = vals[j]; }); break; }
+          // какое-то значение потерялось — по порядку уже не сопоставить, берём только первое
+          if (vals.length && heads[0] === 'fundamental') { data.fundamental = { v: vals[0].v, exact: false }; break; }
         }
       }
       const dv = /№\s*(\d{3,6}).{0,25}?\$\s?(\d+[.,]\d{2})\s*на\s*акци/i.exec(l);
@@ -188,7 +241,12 @@ export function parse(text, known = []) {
         }
       }
     }
-    put(current, data);
+    if (Object.keys(data).length) {
+      company = { exact: {} };
+      for (const [k, v] of Object.entries(data)) {
+        if (v && 'v' in v) { company[k] = v.v; company.exact[k] = v.exact; } else company[k] = v;
+      }
+    }
   }
 
   // 3. Индексы: "NCX NCE NCT" / "1 327,86 1 459,08 1 323,07" / "+1,34% +2,37% +1,17%"
@@ -209,7 +267,7 @@ export function parse(text, known = []) {
   const eLine = lines.find(l => /Экономик/i.test(l));
   const dLine = lines.find(l => /Спрос/i.test(l)) || '';
   if (eLine || dLine) {
-    const st = eLine && /Экономик\S*\s*[:;]?\s*([А-Яа-яЁё]{3,})/.exec(eLine);
+    const st = eLine && /Экономик\S*.{0,6}?(Рост|Спад|Стабильн\S*|Кризис|Падени\S*|Застой|Стагнаци\S*|Бум|Восстановлени\S*)/i.exec(eLine);
     const one = re => { const m = re.exec(dLine); return m ? readPct(m[1].replace(/(\d)[ ](\d{2})\s?%/, '$1,$2%')) : null; };
     economy = {
       status: st ? st[1][0].toUpperCase() + st[1].slice(1).toLowerCase() : null,
@@ -218,7 +276,7 @@ export function parse(text, known = []) {
     };
   }
 
-  return { assets: [...assets.values()], indices, economy };
+  return { assets: [...assets.values()], indices, economy, current, company };
 }
 
 // Свести результаты нескольких проходов. Где проходы расходятся — берём
@@ -241,12 +299,38 @@ function pick(cands, ref) {
 export function merge(results, known = {}) {
   const prev = Object.fromEntries((known.assets || []).map(a => [a.ticker, a]));
   const out = [];
-  const tickers = [...new Set(results.flatMap(r => r.assets.map(a => a.ticker)))];
-  for (const t of tickers) {
-    const list = results.map(r => r.assets.find(a => a.ticker === t)).filter(Boolean);
-    const a = { ticker: t, unsure: [] };
+  // Новые активы (с названием) группируем по похожему названию: в разных проходах
+  // тикер одной и той же акции может прочитаться по-разному (TRIG и CT).
+  const all = results.flatMap(r => r.assets);
+  const current = results.map(r => r.current).find(Boolean);
+  if (current) for (const r of results) if (r.company) all.push({ ticker: current, ...r.company });
+  const clusters = [];
+  for (const x of all) {
+    const c = x.name
+      ? clusters.find(c => c.name && similar(norm(c.name), norm(x.name)) >= 0.7)
+      : clusters.find(c => !c.name && c.list[0].ticker === x.ticker);
+    if (c) c.list.push(x); else clusters.push({ name: x.name, list: [x] });
+  }
+  // правдоподобный тикер похож на начало названия или на его инициалы
+  const plaus = (t, name) => {
+    const g = guessTicker(name) || '';
+    const ini = (name || '').split(/\s+/).map(w => w[0]).join('').toUpperCase();
+    return Math.max(similar(t, g.slice(0, t.length)), similar(t, ini)) + (t.length >= 3 ? 0.2 : 0);
+  };
+  const groups = new Map();
+  for (const c of clusters) {
+    const real = c.list.filter(x => !x.guess);
+    const pool = real.length ? real : c.list;
+    const t = c.name ? pool.map(x => x.ticker).sort((p, q) => plaus(q, c.name) - plaus(p, c.name))[0] : c.list[0].ticker;
+    groups.set(t, [...(groups.get(t) || []), ...c.list]);
+  }
+  for (const [t, list] of groups) {
+    const a = { ticker: t, unsure: [], guess: list.every(x => x.guess) };
     for (const k of ['price', 'change', 'fundamental', 'revenue', 'profit', 'capital']) {
-      const p = pick(list.map(x => x[k] != null ? { v: x[k], exact: x.exact[k] } : null), prev[t]?.[k]);
+      let cands = list.map(x => x[k] != null ? { v: x[k], exact: x.exact[k] } : null);
+      // фундаментальная цена не бывает в разы дальше рыночной — отсекаем перепутанные колонки
+      if (k === 'fundamental' && a.price) cands = cands.filter(c => c && c.v / a.price > 0.5 && c.v / a.price < 2);
+      const p = pick(cands, prev[t]?.[k]);
       if (!p) continue;
       a[k] = p.v;
       if (!p.sure) a.unsure.push(k);

@@ -147,7 +147,7 @@ h3 { font-size: 13px; margin: 14px 0 8px; color: var(--muted); font-weight: 600;
 .review .r { display: grid; grid-template-columns: 22px minmax(0, 1fr) 120px 80px; gap: 8px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line); }
 .review .r .input { padding: 6px 8px; }
 .review .r input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--green); }
-.preview-img { width: 100%; border-radius: 10px; border: 1px solid var(--line); margin-bottom: 10px; max-height: 180px; object-fit: cover; object-position: top; }
+.preview-img { display: block; width: 100%; height: auto; max-height: 60vh; object-fit: contain; background: #000; border-radius: 10px; border: 1px solid var(--line); margin-bottom: 10px; cursor: zoom-in; }
 
 .banner { background: var(--yellow-bg); color: var(--yellow); border-radius: 10px; padding: 8px 12px; font-size: 12px; margin-bottom: 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .members { display: flex; align-items: center; }
