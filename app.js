@@ -16,6 +16,8 @@ const S = {
   selecting: false, sel: new Set(),
   ordering: false, order: lsGet('ncx-order', []), // свой порядок строк (на этом устройстве)
   helperOn: lsGet('ncx-helper', false), // связь с программой для ПК на этом устройстве
+  helperAuto: lsGet('ncx-helper-auto', true), // уверенные снимки сохранять сразу
+  checks: [], // снимки помощника, которые ждут проверки
 };
 let store;
 let unsubs = [];
@@ -107,7 +109,7 @@ function render() {
         <button class="btn primary" data-act="scan"><i class="ti ti-scan"></i><span class="lbl">Распознать скриншот</span></button>
       </div>
     </div>
-    <nav class="tabs">${tab('market', 'Рынок')}${tab('portfolio', 'Мой портфель')}${tab('group', 'Группа')}${tab('helper', 'Программа для ПК' + (helper.connected ? ' <span class="up">●</span>' : ''))}</nav>
+    <nav class="tabs">${tab('market', 'Рынок')}${tab('portfolio', 'Мой портфель')}${tab('group', 'Группа')}${tab('helper', 'Программа для ПК' + (helper.connected ? ' <span class="up">●</span>' : '') + (S.checks.length ? ` <span class="badge">${S.checks.length}</span>` : ''))}</nav>
     ${body}
   </div>
   <nav class="bottomnav">${bn('market', 'Рынок', 'chart-candle')}${bn('portfolio', 'Портфель', 'wallet')}${bn('group', 'Группа', 'users')}</nav>`;
@@ -139,6 +141,8 @@ function viewMarket() {
         <div class="lbl">${econ.demand != null ? 'спрос ' + U.pct(econ.demand) : ''}${econ.costs != null ? ' · расходы ' + U.pct(econ.costs) : ''}</div></div>` : ''}
       ${idx.map(i => `<div class="panel"><div class="lbl">${esc(i.code)}</div><div class="val num">${U.plain(i.value)} <span class="small ${U.cls(i.change)}">${U.pct(i.change)}</span></div></div>`).join('')}
     </div>` : ''}
+    ${S.checks.length ? `<div class="banner" style="background:var(--panel2);color:var(--text)"><span><i class="ti ti-photo-check warn"></i> Снимков помощника на проверке: ${S.checks.length}</span>
+      <button class="btn primary" data-act="check-all">Проверить</button></div>` : ''}
     <div class="chips">${chip('all', 'Все')}${chip('stock', 'Акции')}${chip('crypto', 'Крипто')}${chip('fav', '<i class="ti ti-star"></i> Избранное')}${chip('under', 'Недооценённые')}
       <span style="margin-left:auto;display:flex;gap:6px">
       ${list.length > 1 && !S.selecting && !S.ordering && S.filter !== 'under' ? '<button class="chip" data-act="order-mode"><i class="ti ti-arrows-sort"></i> Порядок</button>' : ''}
@@ -804,7 +808,7 @@ const METRICS = [
 ];
 
 // pre — уже готовый результат распознавания (снимок программы для ПК)
-function openScan(file, pre) {
+function openScan(file, pre, onSaved) {
   const close = modal('Распознать скриншот', `
     <div id="scan-step">
       <label class="drop" id="drop"><i class="ti ti-photo-up"></i><b>Выбери скриншот планшета</b><div class="small">или перетащи сюда, или вставь Ctrl+V</div>
@@ -835,6 +839,7 @@ function openScan(file, pre) {
         if (st) st.textContent = msg;
         if (pb) pb.style.width = Math.round(p * 100) + '%';
       });
+      snapToKnown(res);
       showReview(step, url, res);
     } catch (e) {
       console.error(e);
@@ -854,13 +859,17 @@ function openScan(file, pre) {
       const old = known[a.ticker];
       const bad = k => (a.unsure || []).includes(k) ? ' style="border-color:var(--yellow)"' : '';
       const warn = !old ? `<span class="warn small">${a.guess ? chk + ' тикер не прочитался, впиши его' : 'новый актив, проверь тикер'}</span>`
+        : a.readAs ? `<span class="warn small">${chk} прочитано как ${esc(a.readAs)} — похоже на ${esc(a.ticker)}, было ${U.money(old.price)}</span>`
         : a.unsure?.includes('price') ? `<span class="warn small">${chk} проверь цену · было ${U.money(old.price)}</span>`
         : `<span class="small muted">было ${U.money(old.price)}</span>`;
       const metrics = METRICS.filter(([k]) => a[k] != null);
       const extra = [a.dividend && `отчёт №${a.dividend.report ?? '—'}, дивиденды ${U.money(a.dividend.perShare)}`, a.cycle && `цикл №${a.cycle.n ?? '—'}`].filter(Boolean).join(' · ');
       return `<div class="r"><input type="checkbox" checked data-i="${i}">
         <span style="min-width:0">${old ? `<b>${esc(a.ticker)}</b> <span class="muted small">${esc(old.name)}</span>`
-          : `<input class="input" style="width:110px;display:inline-block${a.guess ? ';border-color:var(--yellow)' : ''}" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
+          : `${S.assets.length ? `<select class="input" data-i="${i}" data-k="pick" style="width:auto;display:inline-block;margin-right:6px">
+              <option value="__new">Новый актив →</option>
+              ${rankTickers(a.ticker, a.name).slice(0, 8).map(({ x }) => `<option value="${esc(x.ticker)}">Это ${esc(x.ticker)} · ${esc(x.name || '')}</option>`).join('')}
+            </select>` : ''}<input class="input" style="width:110px;display:inline-block${a.guess ? ';border-color:var(--yellow)' : ''}" data-i="${i}" data-k="ticker" value="${esc(a.ticker)}"> <span class="muted small">${esc(a.name || '')}</span>`}
           <div>${warn}${extra ? ` <span class="small muted">· ${extra}</span>` : ''}</div>
           <select class="input" data-i="${i}" data-k="type" style="width:auto;padding:3px 8px;margin-top:4px;font-size:12px">
             ${[['stock', 'Акции'], ['crypto', 'Крипто']].map(([v, l]) => `<option value="${v}" ${(a.type || old?.type || res.pageType || 'stock') === v ? 'selected' : ''}>${l}</option>`).join('')}
@@ -899,7 +908,9 @@ function openScan(file, pre) {
         if (known[a.ticker]) delete item.name; // название известной акции не трогаем — OCR его искажает
         item.type = close.el.querySelector(`select[data-i="${i}"][data-k="type"]`).value;
         const ti = close.el.querySelector(`input[data-i="${i}"][data-k="ticker"]`);
-        if (ti) {
+        const pk = close.el.querySelector(`select[data-i="${i}"][data-k="pick"]`);
+        if (pk && pk.value !== '__new') { item.ticker = pk.value; delete item.name; }
+        else if (ti) {
           item.ticker = ti.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
           if (!item.ticker) { fieldErr(ti, 'Тикер'); bad = true; }
         }
@@ -927,6 +938,7 @@ function openScan(file, pre) {
       }
       await store.saveSnapshot(snap, 'screenshot');
       close();
+      onSaved && onSaved();
       toast(`<i class="ti ti-check up"></i> Сохранено: ${out.length} актив(ов)`);
     });
   }
@@ -936,6 +948,54 @@ function openScan(file, pre) {
 
 function runHelper() { startHelper({ handle: helperJob, onChange: render }); }
 
+// Похожесть тикеров: 1 − (расстояние Левенштейна / длина). NCFUE и NCFUEL — 0,83.
+function likeness(a, b) {
+  a = String(a || '').toUpperCase(); b = String(b || '').toUpperCase();
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] !== b[j - 1]));
+    prev = cur;
+  }
+  return 1 - prev[b.length] / Math.max(a.length, b.length, 1);
+}
+
+function rankTickers(t, name) {
+  return S.assets.map(x => ({ x, s: Math.max(likeness(t, x.ticker), name && x.name ? likeness(name, x.name) : 0) }))
+    .sort((p, q) => q.s - p.s);
+}
+
+// Незнакомый тикер сначала сопоставляем с самым похожим из уже известных: новый актив —
+// только если ничего похожего нет. Неочевидное совпадение помечаем для проверки.
+function snapToKnown(res) {
+  const known = new Set(S.assets.map(x => x.ticker));
+  for (const a of res.assets) {
+    if (known.has(a.ticker)) continue;
+    const [best, second] = rankTickers(a.ticker, a.name);
+    if (!best || best.s < 0.6 || (second && best.s - second.s < 0.15)) continue;
+    a.readAs = a.ticker;
+    a.ticker = best.x.ticker;
+    a.guess = false;
+    if (best.s < 0.8) (a.unsure ||= []).push('ticker');
+  }
+}
+
+function addCheck(file, res, line) {
+  S.checks.push({ file, res, line, at: Date.now() });
+  render();
+}
+
+// Проверка снимков по одному; chain — после сохранения сразу открыть следующий
+function reviewCheck(i, chain) {
+  const c = S.checks[i];
+  if (!c) return;
+  openScan(c.file, c.res, () => {
+    S.checks.splice(S.checks.indexOf(c), 1);
+    render();
+    if (chain && S.checks.length) reviewCheck(0, true);
+  });
+}
+
 // Снимок шапки и карточек от помощника: уверенно прочитанную цену известного актива
 // сохраняем сразу, остальное — в окно проверки. Ответ помощник покажет поверх игры.
 async function helperJob(job) {
@@ -944,9 +1004,10 @@ async function helperJob(job) {
   const res = await recognize(file, { assets: S.assets, indices: S.indices, noRows: true });
   const a = [...res.assets].sort((x, y) => (y.price != null) - (x.price != null))[0];
   if (!a || a.price == null) {
-    openScan(file, res);
+    addCheck(file, res, 'цена не найдена');
     return { status: 'error', title: 'Цена не найдена', text: 'В рамке «шапка» должны быть тикер и цена. Правый клик по значку → Настроить рамки' };
   }
+  snapToKnown(res);
   const old = S.assets.find(x => x.ticker === a.ticker);
   const line = `${a.ticker} ${U.money(a.price)}${a.change != null ? ' ' + U.pct(a.change) : ''}`;
   if (old) {
@@ -957,9 +1018,10 @@ async function helperJob(job) {
     for (const k of ['price', ...METRICS.map(([k]) => k)])
       if (a[k] != null && old[k] && Math.abs(a[k] / old[k] - 1) > 0.3 && !a.unsure.includes(k)) a.unsure.push(k);
   }
-  if (!old || a.guess || a.unsure?.length) {
-    openScan(file, res);
-    return { status: 'check', title: old ? 'Проверь цифры на сайте' : 'Новый актив — проверь на сайте', text: line };
+  if (!S.helperAuto || !old || a.guess || a.unsure?.length) {
+    addCheck(file, res, line);
+    const title = !S.helperAuto ? 'Снимок на проверке' : old ? 'Проверь цифры на сайте' : 'Новый актив — проверь на сайте';
+    return { status: 'check', title, text: `${line} · на проверке: ${S.checks.length}` };
   }
   const { unsure, guess, name, ...item } = a;
   item.type = old.type || item.type || res.pageType || 'stock';
@@ -987,7 +1049,19 @@ function viewHelper() {
       <div class="${cls}"><i class="ti ti-${icon}"></i> ${text}</div>
       <button class="btn ${S.helperOn ? 'ghost' : 'primary'}" data-act="helper-toggle">${S.helperOn ? 'Отключить' : 'Подключить на этом устройстве'}</button>
       <div class="hint" style="flex-basis:100%">Распознаёт снимки сайт, поэтому пока играешь, держи эту вкладку открытой — можно свернуть.</div>
+      <label class="small" style="flex-basis:100%;display:flex;gap:8px;align-items:center;cursor:pointer">
+        <input type="checkbox" data-act="helper-auto" ${S.helperAuto ? 'checked' : ''}>
+        Сохранять сразу, если всё прочитано уверенно. Выключи, чтобы наснимать пачку и проверить всё потом.</label>
     </div>
+    ${S.checks.length ? `<div class="panel pad">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><h3 style="margin:0;flex:1">На проверке: ${S.checks.length}</h3>
+        <button class="btn primary" data-act="check-all"><i class="ti ti-checks"></i>Проверить все</button></div>
+      <div class="check-list">${S.checks.map((c, i) => `<div class="check-row">
+        <span class="num">${esc(c.line)}</span><span class="small muted">${U.ago(c.at)}</span>
+        <button class="btn small" data-act="check-one" data-i="${i}">Проверить</button>
+        <button class="btn icon ghost" data-act="check-drop" data-i="${i}" aria-label="Убрать"><i class="ti ti-x"></i></button></div>`).join('')}</div>
+      <div class="hint" style="margin-top:8px">Список хранится, пока открыта эта вкладка.</div>
+    </div>` : ''}
     <div class="panel pad">
       <h3 style="margin-top:0">Как начать</h3>
       <ol class="steps">
@@ -1040,6 +1114,10 @@ document.addEventListener('click', async e => {
         S.helperOn = !S.helperOn; lsSet('ncx-helper', S.helperOn);
         S.helperOn ? runHelper() : stopHelper();
         render(); break;
+      case 'helper-auto': S.helperAuto = el.checked; lsSet('ncx-helper-auto', S.helperAuto); break;
+      case 'check-all': reviewCheck(0, true); break;
+      case 'check-one': reviewCheck(+el.dataset.i, false); break;
+      case 'check-drop': S.checks.splice(+el.dataset.i, 1); render(); break;
       case 'order-mode': S.ordering = true; render(); break;
       case 'order-done': S.ordering = false; render(); break;
       case 'order-reset': S.order = []; lsSet('ncx-order', []); render(); break;

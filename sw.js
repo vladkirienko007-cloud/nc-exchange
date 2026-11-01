@@ -1,6 +1,6 @@
 // Офлайн-кэш оболочки приложения. Свои файлы: сначала сеть (чтобы обновления
 // приходили сразу), при отсутствии сети — кэш. Данные Firebase кэширует сам.
-const CACHE = 'ncx-v4';
+const CACHE = 'ncx-v5';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'helper.js', 'store.js', 'util.js', 'ocr.js', 'glyphs.js', 'templates.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', e => {
