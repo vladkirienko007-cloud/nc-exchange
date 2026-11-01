@@ -46,6 +46,20 @@ function mergeAsset(old, item, user, at) {
   return a;
 }
 
+// Цена, изменение и мини-график по истории (от старых записей к новым) — нужны после
+// удаления записи: актив возвращается к предыдущей цене.
+function priceFields(hist) {
+  const last = hist[hist.length - 1], prev = hist[hist.length - 2];
+  if (!last) return { price: null, change: null, prevPrice: null, spark: [], updatedAt: null, updatedBy: null, updatedUid: null };
+  return {
+    price: last.price,
+    change: last.change ?? (prev ? (last.price / prev.price - 1) * 100 : null),
+    prevPrice: prev ? prev.price : null,
+    spark: hist.slice(-SPARK_LEN).map(h => h.price),
+    updatedAt: last.at, updatedBy: last.name, updatedUid: last.uid,
+  };
+}
+
 /* ---------------- демо-бэкенд ---------------- */
 
 function createDemoStore() {
@@ -152,9 +166,9 @@ function createDemoStore() {
     async saveSnapshot({ assets = [], indices = [], economy }, source) {
       const at = Date.now();
       for (const item of assets) {
-        state.assets[item.ticker] = mergeAsset(state.assets[item.ticker], item, me, at);
+        const a = state.assets[item.ticker] = mergeAsset(state.assets[item.ticker], item, me, at);
         if (item.price != null) {
-          (state.history[item.ticker] ||= []).push({ id: randomId(), ticker: item.ticker, price: item.price, uid: me.uid, name: me.name, at, source });
+          (state.history[item.ticker] ||= []).push({ id: randomId(), ticker: item.ticker, price: item.price, change: a.change ?? null, uid: me.uid, name: me.name, at, source });
         }
       }
       for (const ix of indices) state.indices[ix.code] = { ...ix };
@@ -163,6 +177,7 @@ function createDemoStore() {
     },
     async deleteHistory(ticker, id) {
       state.history[ticker] = (state.history[ticker] || []).filter(h => h.id !== id);
+      if (state.assets[ticker]) Object.assign(state.assets[ticker], priceFields([...state.history[ticker]].sort((a, b) => a.at - b.at)));
       save();
     },
     async deleteAsset(ticker) { delete state.assets[ticker]; delete state.history[ticker]; save(); },
@@ -329,16 +344,24 @@ async function createFirebaseStore() {
       await F.runTransaction(db, async tx => {
         const olds = await Promise.all(assets.map(a => tx.get(gref('assets', a.ticker))));
         assets.forEach((item, i) => {
-          tx.set(gref('assets', item.ticker), mergeAsset(olds[i].data(), item, user, at));
+          const a = mergeAsset(olds[i].data(), item, user, at);
+          tx.set(gref('assets', item.ticker), a);
           if (item.price != null) {
-            tx.set(F.doc(gcol('assets', item.ticker, 'history')), { ticker: item.ticker, price: item.price, uid: user.uid, name: user.name, at, source });
+            tx.set(F.doc(gcol('assets', item.ticker, 'history')), { ticker: item.ticker, price: item.price, change: a.change ?? null, uid: user.uid, name: user.name, at, source });
           }
         });
         for (const ix of indices) tx.set(gref('indices', ix.code), ix);
         if (economy) tx.update(gref(), { economy });
       });
     },
-    deleteHistory: (t, id) => F.deleteDoc(gref('assets', t, 'history', id)),
+    async deleteHistory(t, id) {
+      const s = await F.getDocs(F.query(gcol('assets', t, 'history'), F.orderBy('at', 'desc'), F.limit(SPARK_LEN + 1)));
+      const rest = s.docs.filter(d => d.id !== id).map(d => d.data()).reverse();
+      const b = F.writeBatch(db);
+      b.delete(gref('assets', t, 'history', id));
+      b.update(gref('assets', t), priceFields(rest));
+      await b.commit();
+    },
     async deleteAsset(t) {
       // вложенная история сама не удаляется — чистим её пачками
       await deleteAll(gcol('assets', t, 'history'));

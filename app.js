@@ -93,6 +93,10 @@ function render() {
   const req = isOwner() && pending().length ? ` <span class="badge">${pending().length}</span>` : '';
   const tab = (v, label) => `<a class="tab ${nav === v ? 'on' : ''}" href="#/${v}">${label}${v === 'group' ? req : ''}</a>`;
   const bn = (v, label, icon) => `<a class="${nav === v ? 'on' : ''}" href="#/${v}"><i class="ti ti-${icon}"></i>${label}${v === 'group' ? req : ''}</a>`;
+  // данные от друзей приходят постоянно — не теряем то, что человек сейчас печатает
+  const ae = document.activeElement;
+  const typing = ae && ae.id && ae.closest('#app') && /^(INPUT|TEXTAREA)$/.test(ae.tagName) && !ae.readOnly
+    ? { id: ae.id, value: ae.value, start: ae.selectionStart, end: ae.selectionEnd } : null;
   $('#app').innerHTML = `
   <div class="shell">
     ${DEMO ? `<div class="banner"><span><i class="ti ti-info-circle"></i> Демо-режим: данные только в этом браузере, друзья их не видят. Для общей таблицы подключи Firebase (см. README).</span><button class="btn ghost small" data-act="reset-demo">Сбросить демо</button></div>` : ''}
@@ -114,7 +118,11 @@ function render() {
   </div>
   <nav class="bottomnav">${bn('market', 'Рынок', 'chart-candle')}${bn('portfolio', 'Портфель', 'wallet')}${bn('group', 'Группа', 'users')}</nav>`;
   if (r.view === 'asset') mountChart();
+  const back = typing && document.getElementById(typing.id);
+  if (back) { back.value = typing.value; back.focus(); try { back.setSelectionRange(typing.start, typing.end); } catch { /* не текстовое поле */ } }
 }
+
+const agoText = at => { const s = U.ago(at); return s === 'сейчас' ? 'только что' : s === '—' ? s : s + ' назад'; };
 
 function online(m) { return Date.now() - (m.lastSeen || 0) < 3 * 60e3; }
 
@@ -259,7 +267,7 @@ function viewAsset(t) {
       <div class="panel pad">
         <h2>Моя позиция</h2>
         ${my ? `<div class="stats" style="margin-top:0">
-            <div class="stat"><div class="lbl">Акций</div><div class="val num">${U.plain(my.qty, 0)}</div></div>
+            <div class="stat"><div class="lbl">${a.type === 'crypto' ? 'Монет' : 'Акций'}</div><div class="val num">${U.plain(my.qty, 0)}</div></div>
             <div class="stat"><div class="lbl">Средняя цена</div><div class="val num">${U.money(my.avg)}</div></div>
             <div class="stat"><div class="lbl">Стоимость</div><div class="val num">${U.money(my.value)}</div></div>
             <div class="stat"><div class="lbl">Прибыль</div><div class="val num ${U.cls(my.unreal)}">${U.money(my.unreal)}<div class="small">${U.pct(my.unrealPct)}</div></div></div>
@@ -392,7 +400,7 @@ function viewGroup() {
       ${reqs.length ? `<div class="panel pad list" style="margin-bottom:14px;border-color:var(--yellow)">
         <h2>Заявки на вступление</h2>
         ${reqs.map(m => `<div class="item">
-          <span style="display:flex;align-items:center;gap:10px">${av(m)}<span>${esc(m.name)}<div class="small muted">${U.ago(m.requestedAt || m.lastSeen)} назад</div></span></span>
+          <span style="display:flex;align-items:center;gap:10px">${av(m)}<span>${esc(m.name)}<div class="small muted">${agoText(m.requestedAt || m.lastSeen)}</div></span></span>
           <span style="display:flex;gap:6px"><button class="btn primary" data-act="approve" data-uid="${esc(m.uid)}">Принять</button><button class="btn danger" data-act="remove" data-uid="${esc(m.uid)}" data-name="${esc(m.name)}">Отклонить</button></span>
         </div>`).join('')}
       </div>` : ''}
@@ -400,7 +408,7 @@ function viewGroup() {
         <h2>Участники</h2>
         ${approved().sort((a, b) => online(b) - online(a)).map(m => `<div class="item">
           <span style="display:flex;align-items:center;gap:10px">${av(m)}${esc(m.name)}${m.uid === S.user.uid ? ' <span class="muted small">(ты)</span>' : ''}${m.uid === S.group.owner ? ' <span class="muted small">· создатель</span>' : ''}</span>
-          <span style="display:flex;gap:6px;align-items:center"><span class="small ${online(m) ? 'up' : 'muted'}">${online(m) ? 'онлайн' : 'был ' + U.ago(m.lastSeen) + ' назад'}</span>
+          <span style="display:flex;gap:6px;align-items:center"><span class="small ${online(m) ? 'up' : 'muted'}">${online(m) ? 'онлайн' : 'был ' + agoText(m.lastSeen)}</span>
           ${isOwner() && m.uid !== S.user.uid ? `<button class="btn icon ghost" data-act="remove" data-uid="${esc(m.uid)}" data-name="${esc(m.name)}" aria-label="Исключить"><i class="ti ti-user-minus"></i></button>` : ''}</span>
         </div>`).join('')}
       </div>
@@ -408,7 +416,7 @@ function viewGroup() {
     <div>
       <div class="panel pad">
         <h2>Пригласить друзей</h2>
-        <div class="hint" style="margin-bottom:10px">Отправь ссылку другу. Он войдёт через Google и отправит заявку, а ${isOwner() ? 'ты примешь её здесь' : 'создатель группы её примет'}. Пока заявку не приняли, человек не видит ни цен, ни участников. Портфель у каждого свой.</div>
+        <div class="hint" style="margin-bottom:10px">Отправь ссылку другу. Он войдёт по логину и паролю (или через Google) и отправит заявку, а ${isOwner() ? 'ты примешь её здесь' : 'создатель группы её примет'}. Пока заявку не приняли, человек не видит ни цен, ни участников. Портфель у каждого свой.</div>
         <div style="display:flex;gap:8px"><input class="input" readonly value="${esc(store.inviteLink())}" id="invite"><button class="btn" data-act="copy-invite"><i class="ti ti-copy"></i></button></div>
       </div>
       <div class="panel pad" style="margin-top:14px">
