@@ -1,5 +1,6 @@
 import { createStore, DEMO, LOGIN_RE } from './store.js';
 import * as U from './util.js';
+import { helper, startHelper, stopHelper, composeJob } from './helper.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -14,6 +15,7 @@ const S = {
   range: '24h',
   selecting: false, sel: new Set(),
   ordering: false, order: lsGet('ncx-order', []), // свой порядок строк (на этом устройстве)
+  helperOn: lsGet('ncx-helper', false), // связь с программой для ПК на этом устройстве
 };
 let store;
 let unsubs = [];
@@ -74,6 +76,7 @@ function subscribe() {
     store.watchAlerts(a => { S.alerts = a; checkAlerts(); render(); }),
   ];
   setInterval(render, 60e3); // «N мин назад» и онлайн
+  if (S.helperOn) runHelper();
 }
 
 /* ---------------- каркас ---------------- */
@@ -82,7 +85,7 @@ function render() {
   if (!S.user || !S.group || !S.group.approved) return;
   const r = route();
   if (r.view === 'asset') ensureHistory(r.arg); else ensureHistory(null);
-  const views = { market: viewMarket, asset: viewAsset, portfolio: viewPortfolio, group: viewGroup };
+  const views = { market: viewMarket, asset: viewAsset, portfolio: viewPortfolio, group: viewGroup, helper: viewHelper };
   const body = (views[r.view] || viewMarket)(r.arg);
   const nav = r.view === 'asset' ? 'market' : r.view;
   const req = isOwner() && pending().length ? ` <span class="badge">${pending().length}</span>` : '';
@@ -104,7 +107,7 @@ function render() {
         <button class="btn primary" data-act="scan"><i class="ti ti-scan"></i><span class="lbl">Распознать скриншот</span></button>
       </div>
     </div>
-    <nav class="tabs">${tab('market', 'Рынок')}${tab('portfolio', 'Мой портфель')}${tab('group', 'Группа')}</nav>
+    <nav class="tabs">${tab('market', 'Рынок')}${tab('portfolio', 'Мой портфель')}${tab('group', 'Группа')}${tab('helper', 'Программа для ПК' + (helper.connected ? ' <span class="up">●</span>' : ''))}</nav>
     ${body}
   </div>
   <nav class="bottomnav">${bn('market', 'Рынок', 'chart-candle')}${bn('portfolio', 'Портфель', 'wallet')}${bn('group', 'Группа', 'users')}</nav>`;
@@ -800,7 +803,8 @@ const METRICS = [
   ['orderFlow', 'Поток заявок, %', 2],
 ];
 
-function openScan(file) {
+// pre — уже готовый результат распознавания (снимок программы для ПК)
+function openScan(file, pre) {
   const close = modal('Распознать скриншот', `
     <div id="scan-step">
       <label class="drop" id="drop"><i class="ti ti-photo-up"></i><b>Выбери скриншот планшета</b><div class="small">или перетащи сюда, или вставь Ctrl+V</div>
@@ -818,15 +822,15 @@ function openScan(file) {
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); const f = e.dataTransfer.files[0]; f && run(f); });
-  if (file) run(file);
+  if (file) run(file, pre);
 
-  async function run(f) {
+  async function run(f, pre) {
     const url = URL.createObjectURL(f);
     const step = $('#scan-step', close.el);
     step.innerHTML = `<img class="preview-img" src="${url}" alt=""><div class="small" id="st">Загружаю распознавание…</div><div class="progress"><div id="pb"></div></div>`;
     try {
       const { recognize } = await import('./ocr.js');
-      const res = await recognize(f, { assets: S.assets, indices: S.indices }, (msg, p) => {
+      const res = pre || await recognize(f, { assets: S.assets, indices: S.indices }, (msg, p) => {
         const st = $('#st', close.el), pb = $('#pb', close.el);
         if (st) st.textContent = msg;
         if (pb) pb.style.width = Math.round(p * 100) + '%';
@@ -928,6 +932,74 @@ function openScan(file) {
   }
 }
 
+/* ---------------- программа для ПК ---------------- */
+
+function runHelper() { startHelper({ handle: helperJob, onChange: render }); }
+
+// Снимок шапки и карточек от помощника: уверенно прочитанную цену известного актива
+// сохраняем сразу, остальное — в окно проверки. Ответ помощник покажет поверх игры.
+async function helperJob(job) {
+  const file = await composeJob(job);
+  const { recognize } = await import('./ocr.js');
+  const res = await recognize(file, { assets: S.assets, indices: S.indices, noRows: true });
+  const a = [...res.assets].sort((x, y) => (y.price != null) - (x.price != null))[0];
+  if (!a || a.price == null) {
+    openScan(file, res);
+    return { status: 'error', title: 'Цена не найдена', text: 'В рамке «шапка» должны быть тикер и цена. Правый клик по значку → Настроить рамки' };
+  }
+  const old = S.assets.find(x => x.ticker === a.ticker);
+  const line = `${a.ticker} ${U.money(a.price)}${a.change != null ? ' ' + U.pct(a.change) : ''}`;
+  if (old) {
+    // долг и «всего монет» почти не меняются, а мелкий шрифт под карточкой читается
+    // хуже всего — уже известные значения не перезаписываем
+    for (const k of ['maxSupply', 'debt']) if (old[k] != null) { delete a[k]; a.unsure = a.unsure?.filter(x => x !== k); }
+    // скачок больше чем на 30% — скорее лишняя или потерянная цифра, пусть посмотрит человек
+    for (const k of ['price', ...METRICS.map(([k]) => k)])
+      if (a[k] != null && old[k] && Math.abs(a[k] / old[k] - 1) > 0.3 && !a.unsure.includes(k)) a.unsure.push(k);
+  }
+  if (!old || a.guess || a.unsure?.length) {
+    openScan(file, res);
+    return { status: 'check', title: old ? 'Проверь цифры на сайте' : 'Новый актив — проверь на сайте', text: line };
+  }
+  const { unsure, guess, name, ...item } = a;
+  item.type = old.type || item.type || res.pageType || 'stock';
+  await store.saveSnapshot({ assets: [item] }, 'screenshot');
+  toast(`<i class="ti ti-check up"></i> Помощник: ${esc(line)}`);
+  const n = METRICS.filter(([k]) => a[k] != null).length;
+  return { status: 'ok', title: 'Сохранено: ' + line, text: n ? `и показатели из карточек: ${n}` : 'карточки в рамку не попали' };
+}
+
+function viewHelper() {
+  const [cls, icon, text] = !S.helperOn ? ['muted', 'plug-off', 'Не подключён на этом устройстве']
+    : helper.connected ? ['up', 'plug-connected', 'Помощник подключён · ' + (helper.game ? 'MTA найдена' : 'MTA не запущена')]
+    : ['warn', 'loader-2', 'Жду помощника — запусти NCXHelper.exe'];
+  return `
+    <div class="panel pad helper-hero">
+      <div class="logo"><i class="ti ti-device-desktop"></i></div>
+      <div style="flex:1;min-width:220px">
+        <h2>Помощник для ПК</h2>
+        <div class="muted">Нажимаешь F9 в игре — цена и показатели открытой акции сами попадают в таблицу для всей группы.</div>
+        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 45 КБ · Windows 10/11 · версия 1.0 · установка не нужна</div>
+      </div>
+      <a class="btn primary" href="download/NCXHelper.exe" download><i class="ti ti-download"></i>Скачать для Windows</a>
+    </div>
+    <div class="panel pad helper-conn">
+      <div class="${cls}"><i class="ti ti-${icon}"></i> ${text}</div>
+      <button class="btn ${S.helperOn ? 'ghost' : 'primary'}" data-act="helper-toggle">${S.helperOn ? 'Отключить' : 'Подключить на этом устройстве'}</button>
+      <div class="hint" style="flex-basis:100%">Распознаёт снимки сайт, поэтому пока играешь, держи эту вкладку открытой — можно свернуть.</div>
+    </div>
+    <div class="panel pad">
+      <h3 style="margin-top:0">Как начать</h3>
+      <ol class="steps">
+        <li>Скачай и запусти NCXHelper.exe. Windows может написать «неизвестный издатель» — нажми «Подробнее» → «Выполнить в любом случае». Значок появится в трее у часов.</li>
+        <li>Нажми «Подключить» выше. Если браузер спросит доступ к устройствам в локальной сети — разреши: так сайт видит помощника на этом ПК.</li>
+        <li>В настройках MTA выбери режим экрана «Оконный без рамки»: в полноэкранном снимок получается чёрным.</li>
+        <li>Открой биржу в планшете, выбери акцию и нажми F9. Справа сверху появится уведомление: зелёное — сохранено, жёлтое — проверь цифры здесь, на сайте.</li>
+        <li>Если рамки не попадают на цену — правый клик по значку в трее → «Настроить рамки».</li>
+      </ol>
+    </div>`;
+}
+
 /* ---------------- действия ---------------- */
 
 document.addEventListener('click', async e => {
@@ -964,6 +1036,10 @@ document.addEventListener('click', async e => {
         if (!('Notification' in window)) return toast('Браузер не поддерживает уведомления');
         toast((await Notification.requestPermission()) === 'granted' ? 'Уведомления включены' : 'Уведомления запрещены в настройках браузера');
         break;
+      case 'helper-toggle':
+        S.helperOn = !S.helperOn; lsSet('ncx-helper', S.helperOn);
+        S.helperOn ? runHelper() : stopHelper();
+        render(); break;
       case 'order-mode': S.ordering = true; render(); break;
       case 'order-done': S.ordering = false; render(); break;
       case 'order-reset': S.order = []; lsSet('ncx-order', []); render(); break;

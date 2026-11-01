@@ -718,7 +718,8 @@ export async function recognize(file, known = {}, onProgress = () => {}) {
     results.push({ assets: [], indices: [], economy: null, current: null, company, lines: [] });
   }
 
-  const rows = await findRows(file);
+  // снимки помощника — только шапка и карточки, списка там нет
+  const rows = known.noRows ? [] : await findRows(file);
   const rowTexts = [];
   if (rows.length) {
     progressCb = () => {};
