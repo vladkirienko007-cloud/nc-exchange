@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
 
 static class Program
 {
-    public const string Version = "1.2";
+    public const string Version = "1.2.1";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -985,6 +985,13 @@ class HelperApp : ApplicationContext
         {
             Frames f;
             if (settings.PerRes.TryGetValue(s.Key, out f) && !f.Manual) { settings.PerRes.Remove(s.Key); settings.Save(); }
+        }
+        // страница сайта открыта ещё со старой версии: снимок экрана целиком она проверяет как
+        // обычный скриншот и рамок не возвращает — без этого каждый снимок был бы целым экраном
+        if (s != null && s.Calib && status != "error" && !r.ContainsKey("frames"))
+        {
+            toast.Pop("Обнови страницу сайта биржи", "Открыта старая версия сайта — нажми на ней Ctrl+F5, тогда снимки будут только нужных мест", Yellow, 12000);
+            return;
         }
         var c = status == "ok" ? Green : status == "check" ? Yellow : Red;
         toast.Pop(title ?? "", text ?? "", c, status == "ok" ? 4500 : 8000);
