@@ -1049,7 +1049,7 @@ function viewHelper() {
       <div style="flex:1;min-width:220px">
         <h2>Помощник для ПК</h2>
         <div class="muted">Нажимаешь F9 в игре — цена и показатели открытой акции сами попадают в таблицу для всей группы.</div>
-        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 45 КБ · Windows 10/11 · версия 1.0 · установка не нужна</div>
+        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 45 КБ · Windows 10/11 · версия 1.1 · установка не нужна</div>
       </div>
       <a class="btn primary" href="download/NCXHelper.exe" download><i class="ti ti-download"></i>Скачать для Windows</a>
     </div>

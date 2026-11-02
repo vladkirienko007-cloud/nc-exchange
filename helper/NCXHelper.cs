@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 static class Program
 {
-    public const string Version = "1.0";
+    public const string Version = "1.1";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -748,7 +748,7 @@ class HotkeyWindow : NativeWindow
     }
 }
 
-// Короткий щелчок затвора — синтезируем, чтобы не таскать звуковой файл
+// Тихий мягкий двойной сигнал вместо щелчка затвора — синтезируем, чтобы не таскать звуковой файл
 static class Shutter
 {
     static byte[] wav;
@@ -766,8 +766,7 @@ static class Shutter
     static byte[] Make()
     {
         const int rate = 22050;
-        int n = rate * 90 / 1000;
-        var rnd = new Random(7);
+        int n = rate * 260 / 1000;
         var ms = new MemoryStream();
         var w = new BinaryWriter(ms);
         w.Write(Encoding.ASCII.GetBytes("RIFF")); w.Write(36 + n * 2); w.Write(Encoding.ASCII.GetBytes("WAVE"));
@@ -777,10 +776,18 @@ static class Shutter
         for (int i = 0; i < n; i++)
         {
             double t = i / (double)rate;
-            // два щелчка: открытие и закрытие шторки
-            double env = Math.Exp(-t * 180) + (t > 0.045 ? 0.6 * Math.Exp(-(t - 0.045) * 220) : 0);
-            w.Write((short)((rnd.NextDouble() * 2 - 1) * env * 9000));
+            // две чистые ноты (ми и ля второй октавы) с плавным началом и затуханием
+            double v = Note(t, 0, 659.3, 0.10) + Note(t, 0.07, 880.0, 0.19);
+            w.Write((short)(v * 2600));
         }
         return ms.ToArray();
+    }
+
+    static double Note(double t, double start, double freq, double len)
+    {
+        double x = t - start;
+        if (x < 0 || x > len) return 0;
+        double env = Math.Min(1, x / 0.012) * Math.Exp(-x * 5 / len) * Math.Min(1, (len - x) / 0.02);
+        return Math.Sin(2 * Math.PI * freq * x) * env;
     }
 }
