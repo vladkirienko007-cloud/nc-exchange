@@ -1,6 +1,6 @@
 import { createStore, DEMO, LOGIN_RE } from './store.js';
 import * as U from './util.js';
-import { helper, startHelper, stopHelper, composeJob } from './helper.js';
+import { helper, startHelper, stopHelper, composeJob, cropFrames, sendSample } from './helper.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -946,7 +946,7 @@ function openScan(file, pre, onSaved) {
       }
       await store.saveSnapshot(snap, 'screenshot');
       close();
-      onSaved && onSaved();
+      onSaved && onSaved(snap);
       toast(`<i class="ti ti-check up"></i> Сохранено: ${out.length} актив(ов)`);
     });
   }
@@ -988,8 +988,8 @@ function snapToKnown(res) {
   }
 }
 
-function addCheck(file, res, line) {
-  S.checks.push({ file, res, line, at: Date.now() });
+function addCheck(file, res, line, id) {
+  S.checks.push({ id, file, res, line, at: Date.now() });
   render();
 }
 
@@ -997,7 +997,10 @@ function addCheck(file, res, line) {
 function reviewCheck(i, chain) {
   const c = S.checks[i];
   if (!c) return;
-  openScan(c.file, c.res, () => {
+  openScan(c.file, c.res, snap => {
+    // проверенные человеком значения — лучшие образцы для обучения
+    const item = snap.assets.length === 1 ? snap.assets[0] : null;
+    if (item && c.id) sendSample(c.id, c.file, item, true);
     S.checks.splice(S.checks.indexOf(c), 1);
     render();
     if (chain && S.checks.length) reviewCheck(0, true);
@@ -1007,13 +1010,38 @@ function reviewCheck(i, chain) {
 // Снимок шапки и карточек от помощника: уверенно прочитанную цену известного актива
 // сохраняем сразу, остальное — в окно проверки. Ответ помощник покажет поверх игры.
 async function helperJob(job) {
-  const file = await composeJob(job);
   const { recognize } = await import('./ocr.js');
+  let file = await composeJob(job);
+  let frames = null;
+  if (job.calibrate) {
+    // первый снимок на этом экране — целиком: находим шапку и карточки, отдаём программе
+    // их рамки, а цены читаем уже по рамкам, как у следующих снимков
+    const cal = await recognize(file, { assets: S.assets, noRows: true, layout: true });
+    const L = cal.layout;
+    if (!L || !L.header) return { status: 'error', title: 'Биржа не найдена на экране', text: 'Открой в планшете акцию на вкладке «Рынок» и нажми F9 ещё раз' };
+    const frac = r => r && [r.x / L.width, r.y / L.height, r.w / L.width, r.h / L.height].map(v => Math.round(v * 1e5) / 1e5);
+    frames = { header: frac(L.header), cards: frac(L.cards) };
+    file = await cropFrames(file, [L.header, L.cards]);
+  }
+  const out = await readHelperShot(file, job, recognize);
+  return frames ? { ...out, frames } : out;
+}
+
+async function readHelperShot(file, job, recognize) {
   const res = await recognize(file, { assets: S.assets, indices: S.indices, noRows: true });
+  // на снимке программы один актив: если тикер в шапке и у карточек прочитался по-разному,
+  // склеиваем в одну запись — цена из шапки, недостающие показатели из остальных
+  if (res.assets.length > 1) {
+    const [main, ...rest] = [...res.assets].sort((x, y) => (y.price != null) - (x.price != null));
+    for (const o of rest) for (const k of Object.keys(o)) if (main[k] == null && k !== 'ticker') main[k] = o[k];
+    main.unsure = [...new Set([...(main.unsure || []), ...rest.flatMap(o => o.unsure || [])])];
+    res.assets = [main];
+  }
   const a = [...res.assets].sort((x, y) => (y.price != null) - (x.price != null))[0];
   if (!a || a.price == null) {
-    addCheck(file, res, 'цена не найдена');
-    return { status: 'error', title: 'Цена не найдена', text: 'В рамке «шапка» должны быть тикер и цена. Правый клик по значку → Настроить рамки' };
+    addCheck(file, res, 'цена не найдена', job.id);
+    // рамки перестали попадать (сменили масштаб интерфейса) — следующий снимок пусть будет целым экраном
+    return { status: 'error', title: 'Цена не найдена', text: 'Следующий снимок будет целым экраном — рамки найдутся заново', recalibrate: !job.calibrate };
   }
   snapToKnown(res);
   const old = S.assets.find(x => x.ticker === a.ticker);
@@ -1027,13 +1055,14 @@ async function helperJob(job) {
       if (a[k] != null && old[k] && Math.abs(a[k] / old[k] - 1) > 0.3 && !a.unsure.includes(k)) a.unsure.push(k);
   }
   if (!S.helperAuto || !old || a.guess || a.unsure?.length) {
-    addCheck(file, res, line);
+    addCheck(file, res, line, job.id);
     const title = !S.helperAuto ? 'Снимок на проверке' : old ? 'Проверь цифры на сайте' : 'Новый актив — проверь на сайте';
     return { status: 'check', title, text: `${line} · на проверке: ${S.checks.length}` };
   }
   const { unsure, guess, name, ...item } = a;
   item.type = old.type || item.type || res.pageType || 'stock';
   await store.saveSnapshot({ assets: [item] }, 'screenshot');
+  sendSample(job.id, file, item, false);
   toast(`<i class="ti ti-check up"></i> Помощник: ${esc(line)}`);
   const n = METRICS.filter(([k]) => a[k] != null).length;
   return { status: 'ok', title: 'Сохранено: ' + line, text: n ? `и показатели из карточек: ${n}` : 'карточки в рамку не попали' };
@@ -1049,7 +1078,7 @@ function viewHelper() {
       <div style="flex:1;min-width:220px">
         <h2>Помощник для ПК</h2>
         <div class="muted">Нажимаешь F9 в игре — цена и показатели открытой акции сами попадают в таблицу для всей группы.</div>
-        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 45 КБ · Windows 10/11 · версия 1.1 · установка не нужна</div>
+        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 54 КБ · Windows 10/11 · версия 1.2 · установка не нужна</div>
       </div>
       <a class="btn primary" href="download/NCXHelper.exe" download><i class="ti ti-download"></i>Скачать для Windows</a>
     </div>
@@ -1076,8 +1105,9 @@ function viewHelper() {
         <li>Скачай и запусти NCXHelper.exe. Windows может написать «неизвестный издатель» — нажми «Подробнее» → «Выполнить в любом случае». Значок появится в трее у часов.</li>
         <li>Нажми «Подключить» выше. Если браузер спросит доступ к устройствам в локальной сети — разреши: так сайт видит помощника на этом ПК.</li>
         <li>В настройках MTA выбери режим экрана «Оконный без рамки»: в полноэкранном снимок получается чёрным.</li>
-        <li>Открой биржу в планшете, выбери акцию и нажми F9. Справа сверху появится уведомление: зелёное — сохранено, жёлтое — проверь цифры здесь, на сайте.</li>
-        <li>Если рамки не попадают на цену — правый клик по значку в трее → «Настроить рамки».</li>
+        <li>Открой биржу в планшете, выбери акцию и нажми F9. Первый снимок на твоём экране уходит целиком: сайт сам найдёт шапку и карточки (около 10 секунд). Дальше снимки по 3–4 секунды, при любом размере экрана.</li>
+        <li>Сверху по центру игры висит плашка помощника. Зелёная «можно снимать» — экран успокоился и эта акция ещё не снята. «Экран меняется…» — подожди долю секунды. «Распознаю…» — сайт работает, можно открывать следующую акцию.</li>
+        <li>Уведомление под плашкой: зелёное — сохранено, жёлтое — проверь цифры здесь, на сайте. Если рамки всё-таки промахиваются — правый клик по значку в трее → «Найти рамки заново» или «Настроить рамки вручную».</li>
       </ol>
     </div>`;
 }

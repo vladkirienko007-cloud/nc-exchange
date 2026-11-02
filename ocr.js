@@ -595,10 +595,28 @@ function headerBoxes(words, s) {
     const cand = W.slice(Math.max(0, i - 4), i).reverse().find(x => /^[A-ZА-Я№]{3,10}$/.test(latin(x.t.replace(/[·•.,:-]+$/, ''))) && !/^N[CС]$/.test(x.t) && Math.abs(x.y0 - W[i].y0) < hh);
     if (cand) { ex = i; tw = { ...cand, t: cand.t.replace(/[·•.,:-]+$/, '') }; h = hh; }
   }
-  if (!tw) return null;
+  // на маленьком экране мелкая серая «NC Exchange» не читается («МО Ежслогое») — тогда шапку
+  // узнаём по раскладке: тикер слева, далеко справа на той же высоте цена крупнее его в 1,6+ раза
+  if (!tw) {
+    const isTicker = x => /^[A-Z]{3,10}$/.test(latin(x.t.replace(/[·•.,:-]+$/, ''))) && !/^N[CС]$/.test(x.t);
+    let best = null;
+    for (const t of W.filter(isTicker)) {
+      const th = t.y1 - t.y0;
+      for (const p of W.filter(x => /\$\s*\d/.test(x.t))) {
+        const ph = p.y1 - p.y0;
+        if (p.x0 - t.x1 > th * 8 && Math.abs((p.y0 + p.y1) / 2 - (t.y0 + t.y1) / 2) < th * 3 && ph > th * 1.6 && (!best || ph > best.ph)) best = { t, ph };
+      }
+    }
+    if (!best) return null;
+    tw = { ...best.t, t: best.t.t.replace(/[·•.,:-]+$/, '') };
+    h = tw.y1 - tw.y0;
+  }
+  const A = ex >= 0 ? W[ex] : tw; // опорное слово: «Exchange» или сам тикер
   const out = { ticker: latin(tw.t) };
+  const area = [tw, A];
+  out.area = () => union(area);
   // цена — слово с $ правее, по высоте рядом со строкой тикера (цена крупнее и чуть выше)
-  const pw = W.filter(x => /\$/.test(x.t) && x.x0 > W[ex].x1 && x.y0 < W[ex].y1 + h * 2 && x.y1 > W[ex].y0 - h * 2)
+  const pw = W.filter(x => /\$/.test(x.t) && x.x0 > A.x1 && x.y0 < A.y1 + h * 2 && x.y1 > A.y0 - h * 2)
     .sort((a, b) => a.y0 - b.y0)[0];
   if (!pw) return out;
   // цена может состоять из нескольких слов ("$242 163,44"): берём подряд идущие числовые
@@ -609,10 +627,51 @@ function headerBoxes(words, s) {
     x1 = x.x1;
   }
   out.priceBox = { x: pw.x0 - 3, y: pw.y0 - 3, w: x1 - pw.x0 + 6, h: pw.y1 - pw.y0 + 6 };
+  area.push({ x0: pw.x0, y0: pw.y0, x1, y1: pw.y1 });
   // процент — под ценой; стрелка ↑/↓ перед ним читается отдельным словом — нужно слово с цифрами
   const cw = W.find(x => /\d/.test(x.t) && /%/.test(x.t) && x.y0 > pw.y1 - 2 && x.y0 < pw.y1 + h * 3 && x.x1 > pw.x0);
-  if (cw) { out.pctBox = { x: cw.x0 - 3, y: cw.y0 - 3, w: cw.x1 - cw.x0 + 6, h: cw.y1 - cw.y0 + 6 }; out.pctWord = cw.t; }
+  if (cw) { out.pctBox = { x: cw.x0 - 3, y: cw.y0 - 3, w: cw.x1 - cw.x0 + 6, h: cw.y1 - cw.y0 + 6 }; out.pctWord = cw.t; area.push(cw); }
   return out;
+}
+
+// Общий прямоугольник для слов {x0, y0, x1, y1} и рамок {x, y, w, h}.
+function union(list) {
+  const r = list.filter(Boolean).map(b => b.w != null ? { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h } : b);
+  if (!r.length) return null;
+  const x0 = Math.min(...r.map(b => b.x0)), y0 = Math.min(...r.map(b => b.y0));
+  return { x: x0, y: y0, w: Math.max(...r.map(b => b.x1)) - x0, h: Math.max(...r.map(b => b.y1)) - y0 };
+}
+
+// Где на снимке шапка и карточки выбранного актива — по ним программа для ПК сама
+// настраивает рамки под любой экран. Прямоугольники в пикселях исходной картинки, с запасом.
+function layoutOf(bmp, words, s) {
+  const pad = (r, k) => {
+    if (!r) return null;
+    const x = Math.max(0, r.x - k), y = Math.max(0, r.y - k);
+    return { x, y, w: Math.min(bmp.width, r.x + r.w + k) - x, h: Math.min(bmp.height, r.y + r.h + k) - y };
+  };
+  const hb = headerBoxes(words, s);
+  const header = hb && hb.priceBox ? hb.area() : null;
+  // карточки — ниже шапки (вкладка «Активные» сверху похожа на подпись «Активность»),
+  // и хотя бы две
+  const cards = cardBoxes(bmp, words, s).filter(c => !header || c.y0 > header.y + header.h);
+  let cardArea = null, lh = 0;
+  if (cards.length >= 2) {
+    lh = cards[0].y1 - cards[0].y0;
+    cardArea = union(cards.flatMap(c => [{ x0: c.x0, y0: c.y0, x1: c.x0, y1: c.y1 }, c.valBox, c.subBox]));
+    // правая карточка: ширина её значения неизвестна по подписи — берём шаг между карточками
+    if (cards.length > 1) cardArea.w = Math.max(cardArea.w, (cards[cards.length - 1].x0 - cards[0].x0) / (cards.length - 1) * cards.length);
+    // плашка дивидендов / цикла под карточками
+    const W = toWords(words, s);
+    const a = W.find(x => /^(Следующ|Ближайш)/i.test(x.t) && x.y0 > cardArea.y);
+    if (a) cardArea = union([cardArea, { x: a.x0 - lh, y: a.y0 - lh * 2.1, w: lh * 45, h: lh * 3.4 }]);
+  }
+  // нашлось одно из двух — второе по раскладке планшета (у NC PAD она одинаковая при любом
+  // размере): карточки ниже шапки на 0,7 её ширины, чуть левее и шире
+  let H = pad(header, Math.round((header ? header.h : 0) * 0.6)), C = pad(cardArea, Math.round(lh * 1.2));
+  if (H && !C) C = pad({ x: H.x - H.w * 0.06, y: H.y + H.w * 0.69, w: H.w * 1.06, h: H.w * 0.23 }, 0);
+  else if (C && !H && cards.length >= 3) H = pad({ x: C.x + C.w * 0.055, y: C.y - C.w * 0.66, w: C.w * 0.95, h: C.w * 0.17 }, 0);
+  return { width: bmp.width, height: bmp.height, header: H, cards: C };
 }
 
 async function readHeader(bmp, words, s) {
@@ -678,6 +737,9 @@ export async function recognize(file, known = {}, onProgress = () => {}) {
   const w = await getWorker();
   // цифры читаются по эталонам, общий текст нужен для названий и тикера — хватит одного прохода
   const passes = [{ raw: false }];
+  // поиск рамок на снимке всего экрана: нужны только слова с координатами, цены потом
+  // читаются по найденным рамкам
+  const fast = !!known.layout;
   const steps = passes.length + 1;
   const texts = [];
   let words = [], wordScale = 1;
@@ -685,7 +747,16 @@ export async function recognize(file, known = {}, onProgress = () => {}) {
   for (let i = 0; i < passes.length; i++) {
     progressCb = (msg, p) => onProgress(`${msg} (${i + 1}/${steps})`, (i + p) / steps);
     progressCb('Подготавливаю картинку…', 0);
-    const canvas = await preprocess(file, passes[i]);
+    const canvas = await preprocess(file, { ...passes[i], scale: known.scale });
+    if (fast) {
+      await w.setParameters({ tessedit_pageseg_mode: '11' });
+      const sparse = await w.recognize(canvas, {}, { text: true, blocks: true });
+      await w.setParameters({ tessedit_pageseg_mode: '3' });
+      texts.push(sparse.data.text);
+      words = sparse.data.words || [];
+      wordScale = canvas.scale;
+      continue;
+    }
     const { data } = await w.recognize(canvas);
     texts.push(data.text);
     if (i === 0) {
@@ -732,7 +803,8 @@ export async function recognize(file, known = {}, onProgress = () => {}) {
     results.push(parseRows(read, known.assets, pagePrices));
   }
   onProgress('Разбираю цифры…', 1);
-  return { ...merge(results, known), text: texts.join('\n———\n') + '\n——— строки ———\n' + rowTexts.join('———\n') + (banner ? '\n——— плашка ———\n' + banner.text : '') };
+  const layout = known.layout ? layoutOf(bmp, words, wordScale) : null;
+  return { ...merge(results, known), layout, text: texts.join('\n———\n') + '\n——— строки ———\n' + rowTexts.join('———\n') + (banner ? '\n——— плашка ———\n' + banner.text : '') };
 }
 
 /* ---------------- разбор текста ---------------- */

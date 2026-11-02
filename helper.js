@@ -45,20 +45,61 @@ export function startHelper({ handle, onChange }) {
 export function stopHelper() { running = false; helper.connected = false; }
 
 // Снимки помощника (шапка, карточки) — одной картинкой друг под другом, как на экране.
-export async function composeJob(job) {
+export async function composeJob(job, k = 1) {
   const bmps = await Promise.all(job.images.map(async im => {
     const blob = await fetch('data:image/png;base64,' + im.data).then(r => r.blob());
     return createImageBitmap(blob);
   }));
   const gap = 24;
   const c = document.createElement('canvas');
-  c.width = Math.max(...bmps.map(b => b.width));
-  c.height = bmps.reduce((s, b) => s + b.height, 0) + gap * (bmps.length - 1);
+  const W = b => Math.round(b.width * k), H = b => Math.round(b.height * k);
+  c.width = Math.max(...bmps.map(W));
+  c.height = bmps.reduce((s, b) => s + H(b), 0) + gap * (bmps.length - 1);
   const g = c.getContext('2d');
   g.fillStyle = '#121722';
   g.fillRect(0, 0, c.width, c.height);
+  g.imageSmoothingQuality = 'high';
   let y = 0;
-  for (const b of bmps) { g.drawImage(b, 0, y); y += b.height + gap; }
+  for (const b of bmps) { g.drawImage(b, 0, y, W(b), H(b)); y += H(b) + gap; }
   const blob = await new Promise(r => c.toBlob(r, 'image/png'));
   return new File([blob], `helper-${job.id}.png`, { type: 'image/png' });
+}
+
+// Рамки (в пикселях) со снимка всего экрана — той же картинкой, что присылает программа.
+export async function cropFrames(file, rects) {
+  const bmp = await createImageBitmap(file);
+  const images = rects.filter(Boolean).map((r, i) => {
+    const c = document.createElement('canvas');
+    c.width = Math.round(r.w); c.height = Math.round(r.h);
+    c.getContext('2d').drawImage(bmp, -Math.round(r.x), -Math.round(r.y));
+    return { name: i ? 'cards' : 'header', data: c.toDataURL('image/png').split(',')[1] };
+  });
+  return composeJob({ id: 'frames', images });
+}
+
+// Как значение выглядит на экране игры — так его ждёт обучение эталонов цифр (dev/train.js)
+const KIND = {
+  price: 'money', fundamental: 'money', revenue: 'money', profit: 'money', capital: 'money', debt: 'money',
+  circulating: 'int', maxSupply: 'int', activity: 'pct1', adoption: 'pct1', risk: 'pct2', orderFlow: 'pct2',
+};
+function gameText(v, kind, sign = false) {
+  const dec = kind === 'money' || kind === 'pct2' ? 2 : kind === 'pct1' ? 1 : 0;
+  const [i, f] = Math.abs(v).toFixed(dec).split('.');
+  const n = i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (f ? ',' + f : '');
+  if (kind === 'money') return (v < 0 ? '-' : '') + '$' + n;
+  if (kind === 'int') return n;
+  return (v < 0 ? '-' : sign && v > 0 ? '+' : '') + n + '%';
+}
+
+// Снимок с правильными значениями — программа складывает такие в папку для дообучения.
+// verified: значения проверил человек (иначе — уверенно прочитанные автоматически).
+export async function sendSample(id, file, item, verified) {
+  if (!helper.connected || item.price == null) return;
+  try {
+    const image = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result.split(',')[1]); fr.readAsDataURL(file); });
+    const cards = {};
+    for (const [k, kind] of Object.entries(KIND)) if (k !== 'price' && item[k] != null) cards[k] = gameText(item[k], kind);
+    const truth = { header: [item.ticker, gameText(item.price, 'money'), item.change != null ? gameText(item.change, 'pct2', true) : null], cards, rows: [], verified };
+    await fetch(BASE + '/sample', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, image, truth }) });
+  } catch { /* образец не обязателен */ }
 }
