@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 
 static class Program
 {
-    public const string Version = "1.2.1";
+    public const string Version = "1.3";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -72,7 +72,9 @@ class Settings
     public bool Sound = true;
     public bool Plaque = true;
     public bool Samples = true;
-    public Keys Hotkey = Keys.F9;
+    public Keys Hotkey = Keys.F5;
+    public bool On = true;                       // кнопка включения на панели
+    public Point PanelAt = new Point(-1, -1);    // где панель относительно окна игры (-1 — сверху по центру)
     static readonly string[] BaseOrigins = { "https://vladkirienko007-cloud.github.io", "http://localhost:8765", "http://127.0.0.1:8765" };
     public List<string> Origins = new List<string>(BaseOrigins);
 
@@ -119,7 +121,14 @@ class Settings
                 else if (k == "sound") s.Sound = v != "0";
                 else if (k == "plaque") s.Plaque = v != "0";
                 else if (k == "samples") s.Samples = v != "0";
-                else if (k == "hotkey") { Keys key; if (Enum.TryParse(v, out key)) s.Hotkey = key; }
+                else if (k == "key") { Keys key; if (Enum.TryParse(v, out key)) s.Hotkey = key; }
+                else if (k == "on") s.On = v != "0";
+                else if (k == "panel")
+                {
+                    var xy = v.Split(',');
+                    int x, y;
+                    if (xy.Length == 2 && int.TryParse(xy[0], out x) && int.TryParse(xy[1], out y)) s.PanelAt = new Point(x, y);
+                }
                 else if (k == "origin" && v.StartsWith("http") && !s.Origins.Contains(v.TrimEnd('/'))) s.Origins.Add(v.TrimEnd('/'));
             }
         }
@@ -134,7 +143,7 @@ class Settings
             Directory.CreateDirectory(Dir);
             var lines = new List<string> {
                 "cardsOn=" + (CardsOn ? 1 : 0), "sound=" + (Sound ? 1 : 0), "plaque=" + (Plaque ? 1 : 0),
-                "samples=" + (Samples ? 1 : 0), "hotkey=" + Hotkey };
+                "samples=" + (Samples ? 1 : 0), "key=" + Hotkey, "on=" + (On ? 1 : 0), "panel=" + PanelAt.X + "," + PanelAt.Y };
             foreach (var kv in PerRes)
                 lines.Add("frames." + kv.Key + "=" + R(kv.Value.Header) + ";" + R(kv.Value.Cards) + (kv.Value.Manual ? ";manual" : ""));
             lines.Add("# свой адрес сайта (если ссылка сменится): origin=https://...");
@@ -149,6 +158,15 @@ class Settings
 
 static class Game
 {
+    [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr h, uint affinity);
+
+    // Окна помощника не попадают на снимки (Windows 10 2004+), даже если панель
+    // перетащили на шапку или карточки
+    public static bool HideFromCapture(IntPtr h)
+    {
+        try { return SetWindowDisplayAffinity(h, 0x11 /* WDA_EXCLUDEFROMCAPTURE */); } catch { return false; }
+    }
+
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -454,6 +472,8 @@ class Toast : Form
         }
     }
 
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); }
+
     public void Pop(string t, string s, Color c, int ms)
     {
         title = t; text = s; accent = c;
@@ -633,12 +653,26 @@ class SetupForm : Form
 
 /* ---------------- плашка состояния поверх игры ---------------- */
 
-// Маленькая плашка сверху по центру окна игры: работает ли помощник и можно ли снимать.
-// Не забирает фокус и пропускает клики в игру.
+// Панель поверх окна игры: работает ли помощник и можно ли снимать, кнопка снимка и
+// кнопка включения. Перетаскивается за левый край или текст, место запоминается.
+// Не забирает фокус у игры и не попадает на снимки.
 class Plaque : Form
 {
-    string text = "";
+    string text = "", key = "";
     Color dot = Color.Gray;
+    bool on = true;
+    Rectangle game;
+    Point at = new Point(-1, -1);       // относительно окна игры
+    bool dragging, moved;
+    Point grab;
+    int hover = -1;                     // 0 — снять, 1 — вкл/выкл
+    Rectangle snapBtn, powerBtn;
+
+    public event Action SnapClicked, PowerClicked, MenuRequested;
+    public event Action<Point> Moved;
+
+    static readonly Font TextFont = new Font("Segoe UI Semibold", 9f);
+    static readonly Font BtnFont = new Font("Segoe UI Semibold", 8.5f);
 
     public Plaque()
     {
@@ -647,8 +681,8 @@ class Plaque : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.FromArgb(18, 22, 31);
-        Size = new Size(300, 28);
-        Opacity = 0.9;
+        Size = new Size(360, 32);
+        Opacity = 0.94;
         DoubleBuffered = true;
     }
 
@@ -659,20 +693,100 @@ class Plaque : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x08 | 0x20 | 0x80 | 0x80000 | 0x08000000; // поверх, сквозь клики, без панели задач, не активируется
+            cp.ExStyle |= 0x08 | 0x80 | 0x08000000; // поверх, без панели задач, не активируется (игра остаётся в фокусе)
             return cp;
         }
     }
 
-    public void Set(string t, Color c, Rectangle game)
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); }
+
+    // клик по окну без активации: игра не теряет фокус, иначе снимок не сделать
+    protected override void WndProc(ref Message m)
     {
-        if (t != text || c != dot) { text = t; dot = c; Invalidate(); }
-        using (var g = CreateGraphics())
-        using (var f = new Font("Segoe UI Semibold", 9f))
-            Width = (int)g.MeasureString(text, f).Width + 40;
-        var p = new Point(game.Left + (game.Width - Width) / 2, game.Top + 8);
-        if (Location != p) Location = p;
+        if (m.Msg == 0x21 /* WM_MOUSEACTIVATE */) { m.Result = (IntPtr)3 /* MA_NOACTIVATE */; return; }
+        base.WndProc(ref m);
+    }
+
+    public void Set(string t, Color c, Rectangle g, string k, bool isOn, Point rel)
+    {
+        bool redraw = t != text || c != dot || k != key || isOn != on;
+        text = t; dot = c; key = k; on = isOn; game = g;
+        if (!dragging) at = rel;
+        int tw;
+        using (var gr = CreateGraphics()) tw = (int)gr.MeasureString(text, TextFont).Width;
+        int snapW;
+        using (var gr = CreateGraphics()) snapW = (int)gr.MeasureString("Снять · " + key, BtnFont).Width + 18;
+        int w = 40 + tw + 10 + snapW + 6 + 30 + 4;
+        snapBtn = new Rectangle(40 + tw + 10, 4, snapW, Height - 8);
+        powerBtn = new Rectangle(snapBtn.Right + 6, 4, 30, Height - 8);
+        if (Width != w) { Width = w; redraw = true; }
+        if (redraw) Invalidate();
+        if (!dragging)
+        {
+            var p = at.X < 0 ? new Point(g.Left + (g.Width - Width) / 2, g.Top + 8) : new Point(g.Left + at.X, g.Top + at.Y);
+            p = Clamp(p);
+            if (Location != p) Location = p;
+        }
         if (!Visible) Show();
+    }
+
+    Point Clamp(Point p)
+    {
+        if (game.IsEmpty) return p;
+        return new Point(Math.Max(game.Left, Math.Min(p.X, game.Right - Width)), Math.Max(game.Top, Math.Min(p.Y, game.Bottom - Height)));
+    }
+
+    int Hit(Point p) { return snapBtn.Contains(p) ? 0 : powerBtn.Contains(p) ? 1 : -1; }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Right) { if (MenuRequested != null) MenuRequested(); return; }
+        if (e.Button != MouseButtons.Left || Hit(e.Location) >= 0) return;
+        dragging = true; moved = false;
+        grab = e.Location;
+        Capture = true;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (dragging)
+        {
+            var p = Clamp(new Point(Cursor.Position.X - grab.X, Cursor.Position.Y - grab.Y));
+            if (p != Location) { Location = p; moved = true; }
+            return;
+        }
+        int h = Hit(e.Location);
+        if (h != hover) { hover = h; Invalidate(); }
+        Cursor = h >= 0 ? Cursors.Hand : Cursors.SizeAll;
+    }
+
+    protected override void OnMouseLeave(EventArgs e) { if (hover != -1) { hover = -1; Invalidate(); } }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (dragging)
+        {
+            dragging = false;
+            Capture = false;
+            if (moved && !game.IsEmpty)
+            {
+                at = new Point(Left - game.Left, Top - game.Top);
+                if (Moved != null) Moved(at);
+            }
+            return;
+        }
+        if (e.Button != MouseButtons.Left) return;
+        int h = Hit(e.Location);
+        if (h == 0 && on && SnapClicked != null) SnapClicked();
+        if (h == 1 && PowerClicked != null) PowerClicked();
+    }
+
+    // двойной щелчок по тексту — панель обратно сверху по центру
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        if (Hit(e.Location) >= 0) return;
+        at = new Point(-1, -1);
+        if (Moved != null) Moved(at);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -681,10 +795,43 @@ class Plaque : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         using (var pen = new Pen(Color.FromArgb(48, 56, 72))) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-        using (var b = new SolidBrush(dot)) g.FillEllipse(b, 12, 9, 10, 10);
-        using (var f = new Font("Segoe UI Semibold", 9f))
-        using (var b = new SolidBrush(Color.FromArgb(225, 232, 244)))
-            g.DrawString(text, f, b, 28, 5);
+        // ручка для перетаскивания
+        using (var b = new SolidBrush(Color.FromArgb(70, 80, 98)))
+            for (int r = 0; r < 3; r++) for (int col = 0; col < 2; col++) g.FillEllipse(b, 8 + col * 5, 9 + r * 5, 3, 3);
+        using (var b = new SolidBrush(dot)) g.FillEllipse(b, 22, 11, 10, 10);
+        using (var b = new SolidBrush(on ? Color.FromArgb(225, 232, 244) : Color.FromArgb(130, 140, 158)))
+            g.DrawString(text, TextFont, b, 38, 8);
+
+        // «Снять · F5»
+        var snapBg = !on ? Color.FromArgb(32, 37, 48) : hover == 0 ? Color.FromArgb(59, 130, 246) : Color.FromArgb(37, 99, 235);
+        Pill(g, snapBtn, snapBg);
+        using (var b = new SolidBrush(on ? Color.White : Color.FromArgb(100, 110, 128)))
+        using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            g.DrawString("Снять · " + key, BtnFont, b, snapBtn, sf);
+
+        // вкл/выкл: значок питания
+        var pw = on ? Color.FromArgb(52, 211, 153) : Color.FromArgb(120, 130, 148);
+        Pill(g, powerBtn, hover == 1 ? Color.FromArgb(48, 56, 72) : Color.FromArgb(32, 37, 48));
+        float cx = powerBtn.Left + powerBtn.Width / 2f, cy = powerBtn.Top + powerBtn.Height / 2f + 0.5f;
+        using (var pen = new Pen(pw, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawArc(pen, cx - 6, cy - 6, 12, 12, -60, 300);
+            g.DrawLine(pen, cx, cy - 8, cx, cy - 1);
+        }
+    }
+
+    static void Pill(Graphics g, Rectangle r, Color c)
+    {
+        using (var path = new GraphicsPath())
+        {
+            int d = 8;
+            path.AddArc(r.Left, r.Top, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            using (var b = new SolidBrush(c)) g.FillPath(b, path);
+        }
     }
 }
 
@@ -700,7 +847,8 @@ class HelperApp : ApplicationContext
     readonly Toast toast = new Toast();
     readonly Plaque plaque = new Plaque();
     readonly HotkeyWindow hk;
-    readonly ToolStripMenuItem statusItem, snapItem, keyMenu, soundItem, plaqueItem, samplesItem;
+    readonly ToolStripMenuItem statusItem, onItem, snapItem, keyMenu, soundItem, plaqueItem, samplesItem;
+    readonly ContextMenuStrip menu;
     readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer { Interval = 250 };
     Bitmap lastFull;
 
@@ -714,7 +862,8 @@ class HelperApp : ApplicationContext
     DateTime stableSince = DateTime.Now, lastSnapAt = DateTime.MinValue;
     bool stable;
 
-    static readonly Keys[] KeyChoices = { Keys.F7, Keys.F9, Keys.F10, Keys.Insert, Keys.Home, Keys.Pause };
+    static readonly Keys[] KeyChoices = { Keys.F5, Keys.F6, Keys.F7, Keys.F9, Keys.F10, Keys.Insert, Keys.Home, Keys.Pause };
+    bool keyBusyShown;
     static readonly Color Blue = Color.FromArgb(96, 165, 250), Green = Color.FromArgb(52, 211, 153),
         Yellow = Color.FromArgb(251, 191, 36), Red = Color.FromArgb(248, 113, 113), Gray = Color.FromArgb(120, 130, 148);
 
@@ -727,8 +876,9 @@ class HelperApp : ApplicationContext
         bridge.Sample += r => SaveSample(r);
         bridge.Start();
 
-        var menu = new ContextMenuStrip();
+        menu = new ContextMenuStrip();
         statusItem = new ToolStripMenuItem("…") { Enabled = false };
+        onItem = new ToolStripMenuItem("Включён", null, (s, e) => TogglePower());
         snapItem = new ToolStripMenuItem("Снять биржу", null, (s, e) => Snap());
         keyMenu = new ToolStripMenuItem("Горячая клавиша");
         foreach (var k in KeyChoices)
@@ -737,10 +887,10 @@ class HelperApp : ApplicationContext
             keyMenu.DropDownItems.Add(new ToolStripMenuItem(k.ToString(), null, (s, e) => SetKey(key)));
         }
         soundItem = new ToolStripMenuItem("Звук снимка", null, (s, e) => { settings.Sound = !settings.Sound; settings.Save(); RefreshMenu(); });
-        plaqueItem = new ToolStripMenuItem("Плашка поверх игры", null, (s, e) => { settings.Plaque = !settings.Plaque; settings.Save(); RefreshMenu(); });
+        plaqueItem = new ToolStripMenuItem("Панель поверх игры", null, (s, e) => { settings.Plaque = !settings.Plaque; settings.Save(); RefreshMenu(); });
         samplesItem = new ToolStripMenuItem("Сохранять снимки для обучения", null, (s, e) => { settings.Samples = !settings.Samples; settings.Save(); RefreshMenu(); });
         menu.Items.AddRange(new ToolStripItem[] {
-            statusItem, new ToolStripSeparator(), snapItem,
+            statusItem, new ToolStripSeparator(), onItem, snapItem,
             new ToolStripMenuItem("Найти рамки заново (автоматически)", null, (s, e) => Recalibrate()),
             new ToolStripMenuItem("Настроить рамки вручную…", null, (s, e) => Setup()),
             keyMenu, soundItem, plaqueItem, samplesItem,
@@ -759,16 +909,21 @@ class HelperApp : ApplicationContext
         };
         tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) Setup(); };
 
+        // клавиша занята помощником, только пока открыта игра: F5 в браузере и других
+        // программах работает как обычно
         hk = new HotkeyWindow();
         hk.Pressed += Snap;
-        if (!hk.Register(settings.Hotkey))
-            toast.Pop("Клавиша " + settings.Hotkey + " занята", "Выбери другую: правый клик по значку в трее → Горячая клавиша", Yellow, 8000);
+
+        plaque.SnapClicked += Snap;
+        plaque.PowerClicked += TogglePower;
+        plaque.MenuRequested += () => menu.Show(Cursor.Position);
+        plaque.Moved += pt => { settings.PanelAt = pt; settings.Save(); };
 
         tick.Tick += (s, e) => Tick();
         tick.Start();
 
         if (bridge.Error != null) toast.Pop("Помощник не запустился", bridge.Error, Red, 10000);
-        else toast.Pop("Помощник " + Program.Version + " запущен", "Открой биржу в игре, выбери акцию и нажми " + settings.Hotkey, Blue, 6000);
+        else toast.Pop("Помощник " + Program.Version + " запущен", "Открой биржу в игре, выбери акцию и нажми " + settings.Hotkey + " или «Снять» на панели", Blue, 6000);
         RefreshMenu();
     }
 
@@ -788,7 +943,18 @@ class HelperApp : ApplicationContext
         var game = Game.ClientOnScreen(w);
         var fg = GetForegroundWindow();
         bool inGame = !game.IsEmpty && (fg == w || fg == toast.Handle || fg == plaque.Handle);
+        bool wantKey = inGame && settings.On;
+        if (wantKey != hk.Registered)
+        {
+            if (!wantKey) hk.Unregister();
+            else if (!hk.Register(settings.Hotkey) && !keyBusyShown)
+            {
+                keyBusyShown = true;
+                toast.Pop("Клавиша " + settings.Hotkey + " занята", "Её держит другая программа. Снимай кнопкой на панели или выбери другую клавишу: правый клик по панели → Горячая клавиша", Yellow, 9000);
+            }
+        }
         if (!settings.Plaque || !inGame) { if (plaque.Visible) plaque.Hide(); return; }
+        if (!settings.On) { plaque.Set("NCX · выключен", Gray, game, settings.Hotkey.ToString(), false, settings.PanelAt); return; }
 
         var f = CurrentFrames(game.Size);
         bool same = false;
@@ -813,11 +979,11 @@ class HelperApp : ApplicationContext
         else if (!bridge.SiteConnected) { text = "NCX · открой сайт биржи на этом ПК"; c = Yellow; }
         else if (sent.Values.Any(x => x.Calib)) { text = "NCX · настраиваю рамки под твой экран…"; c = Blue; }
         else if (waiting > 0) { text = "NCX · распознаю… (" + waiting + ") ~" + Math.Round(avgSec * waiting) + " с"; c = Blue; }
-        else if (f == null) { text = "NCX · " + settings.Hotkey + " — первый снимок настроит рамки"; c = Green; }
+        else if (f == null) { text = "NCX · первый снимок настроит рамки"; c = Green; }
         else if (!stable) { text = "NCX · экран меняется…"; c = Gray; }
         else if (same) { text = "NCX · эта акция уже снята"; c = Gray; }
-        else { text = "NCX · можно снимать · " + settings.Hotkey; c = Green; }
-        plaque.Set(text, c, game);
+        else { text = "NCX · можно снимать"; c = Green; }
+        plaque.Set(text, c, game, settings.Hotkey.ToString(), true, settings.PanelAt);
     }
 
     void RefreshMenu()
@@ -827,6 +993,8 @@ class HelperApp : ApplicationContext
         statusItem.Text = (bridge.SiteConnected ? "● Сайт подключён" : "○ Сайт не открыт") + " · " +
             (game.IsEmpty ? "MTA не найдена" : "MTA " + Settings.Key(game.Size) + (f == null ? ", рамки ещё не найдены" : f.Manual ? ", рамки вручную" : ", рамки найдены"));
         snapItem.Text = "Снять биржу (" + settings.Hotkey + ")";
+        snapItem.Enabled = settings.On;
+        onItem.Checked = settings.On;
         soundItem.Checked = settings.Sound;
         plaqueItem.Checked = settings.Plaque;
         samplesItem.Checked = settings.Samples;
@@ -835,9 +1003,29 @@ class HelperApp : ApplicationContext
 
     void SetKey(Keys k)
     {
+        bool was = hk.Registered;
         hk.Unregister();
-        if (hk.Register(k)) { settings.Hotkey = k; settings.Save(); toast.Pop("Клавиша снимка: " + k, "Нажимай её в игре, когда открыта акция на бирже", Blue, 4000); }
-        else { hk.Register(settings.Hotkey); toast.Pop("Клавиша " + k + " занята", "Её уже использует другая программа", Yellow, 5000); }
+        if (hk.Register(k))
+        {
+            if (!was) hk.Unregister(); // снова займём, когда откроется игра
+            settings.Hotkey = k; settings.Save(); keyBusyShown = false;
+            toast.Pop("Клавиша снимка: " + k, "Нажимай её в игре, когда открыта акция на бирже", Blue, 4000);
+        }
+        else
+        {
+            if (was) hk.Register(settings.Hotkey);
+            toast.Pop("Клавиша " + k + " занята", "Её уже использует другая программа", Yellow, 5000);
+        }
+        RefreshMenu();
+    }
+
+    void TogglePower()
+    {
+        settings.On = !settings.On;
+        settings.Save();
+        if (!settings.On) hk.Unregister();
+        toast.Pop(settings.On ? "Помощник включён" : "Помощник выключен",
+            settings.On ? "Снимай клавишей " + settings.Hotkey + " или кнопкой на панели" : "Клавиша " + settings.Hotkey + " снова работает в игре как обычно", settings.On ? Green : Gray, 3000);
         RefreshMenu();
     }
 
@@ -886,6 +1074,7 @@ class HelperApp : ApplicationContext
 
     void Snap()
     {
+        if (!settings.On) return;
         var game = Game.ClientOnScreen(Game.Window());
         var f = game.IsEmpty ? null : CurrentFrames(game.Size);
         WaitStable(f);
@@ -1069,8 +1258,9 @@ class HotkeyWindow : NativeWindow
 
     public HotkeyWindow() { CreateHandle(new CreateParams()); }
 
-    public bool Register(Keys k) { return RegisterHotKey(Handle, 1, 0x4000 /* без автоповтора */, (uint)k); }
-    public void Unregister() { UnregisterHotKey(Handle, 1); }
+    public bool Registered { get; private set; }
+    public bool Register(Keys k) { Registered = RegisterHotKey(Handle, 1, 0x4000 /* без автоповтора */, (uint)k); return Registered; }
+    public void Unregister() { if (Registered) UnregisterHotKey(Handle, 1); Registered = false; }
 
     protected override void WndProc(ref Message m)
     {
