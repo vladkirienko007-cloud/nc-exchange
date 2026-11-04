@@ -253,7 +253,7 @@ function viewAsset(t) {
           <div class="stat"><div class="lbl">Капитал компании</div><div class="val num">${U.compact(a.capital)}</div>${a.debt ? `<div class="small muted">долг ${U.compact(a.debt)}</div>` : ''}</div>`}
         </div>
         ${dv ? `<div class="dividend"><div class="up"><i class="ti ti-coins"></i> Отчёт №${esc(dv.report ?? '—')} · дивиденды ${U.money(dv.perShare)} на акцию</div>${dv.next ? `<div class="small muted">Следующий отчёт №${esc(dv.next)}</div>` : ''}</div>` : ''}
-        ${a.cycle ? `<div class="dividend" style="background:#1d1730;border-color:#3b2d63"><div style="color:#b9a4ff"><i class="ti ti-coins"></i> Цикл крипторынка №${esc(a.cycle.n ?? '—')}</div>${a.cycle.next ? `<div class="small muted">Следующее обновление: ${esc(a.cycle.next)}</div>` : ''}</div>` : ''}
+        ${a.cycle ? `<div class="dividend" style="background:var(--panel2);border-color:var(--line2)"><div style="color:var(--text)"><i class="ti ti-coins"></i> Цикл крипторынка №${esc(a.cycle.n ?? '—')}</div>${a.cycle.next ? `<div class="small muted">Следующее обновление: ${esc(a.cycle.next)}</div>` : ''}</div>` : ''}
         <button class="btn block fav-btn ${S.favs.has(t) ? 'on' : ''}" style="margin-top:12px" data-act="fav" data-t="${esc(t)}">
           <i class="ti ti-star"></i>${S.favs.has(t) ? 'В избранном — убрать' : 'Добавить в избранное'}</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -350,7 +350,7 @@ function mountChart() {
 
 function viewPortfolio() {
   const pf = U.buildPortfolio(S.trades, S.assets);
-  const colors = ['#5b6cff', '#3fdca0', '#f2b84b', '#ff6b7a', '#8fa0ff', '#b8742a', '#2fb5c9'];
+  const colors = ['#e4e4e7', '#34d399', '#f5b942', '#f87171', '#a1a1aa', '#c08a4a', '#5fb3c8'];
   const card = (lbl, val, sub, c = '') => `<div class="panel"><div class="lbl">${lbl}</div><div class="val num ${c}">${val}</div>${sub ? `<div class="small ${c || 'muted'}">${sub}</div>` : ''}</div>`;
   const sideTxt = { buy: '<span class="up">Покупка</span>', sell: '<span class="down">Продажа</span>', div: '<span class="warn">Дивиденды</span>' };
   return `
@@ -427,7 +427,7 @@ function viewGroup() {
           ${DEMO ? '' : '<button class="btn" data-act="signout"><i class="ti ti-logout"></i>Выйти из аккаунта</button>'}
         </div>
       </div>
-      <div class="panel pad" style="margin-top:14px;border-color:#4a2330">
+      <div class="panel pad" style="margin-top:14px;border-color:#4a2427">
         <h2>${isOwner() ? 'Удалить группу' : 'Выйти из группы'}</h2>
         <div class="hint" style="margin-bottom:10px">${isOwner()
           ? 'Удалятся все активы, история цен и индексы группы, а участники потеряют к ней доступ. Портфели участников останутся у них. Вернуть нельзя.'
@@ -1078,7 +1078,7 @@ function viewHelper() {
       <div style="flex:1;min-width:220px">
         <h2>Помощник для ПК</h2>
         <div class="muted">Нажимаешь F5 в игре (или «Снять» на панели) — цена и показатели открытой акции сами попадают в таблицу для всей группы.</div>
-        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 63 КБ · Windows 10/11 · версия 1.5.2 · установка не нужна</div>
+        <div class="small muted" style="margin-top:6px">NCXHelper.exe · 63 КБ · Windows 10/11 · версия 1.5.3 · установка не нужна</div>
       </div>
       <a class="btn primary" href="download/NCXHelper.exe" download><i class="ti ti-download"></i>Скачать для Windows</a>
     </div>

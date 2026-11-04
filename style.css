@@ -1,21 +1,22 @@
+/* «Графит»: монохром, цвет только у роста, падения и предупреждений */
 :root {
-  --bg: #0b111b;
-  --panel: #111927;
-  --panel2: #162033;
-  --line: #1e293a;
-  --line2: #2a3850;
-  --text: #e8edf5;
-  --muted: #7d8aa0;
-  --green: #3fdca0;
-  --green-bg: #0f2a22;
-  --green-line: #1d4a3a;
-  --red: #ff6b7a;
-  --red-bg: #2a1219;
-  --yellow: #f2b84b;
-  --yellow-bg: #2a2110;
-  --blue: #5b6cff;
-  --blue-soft: #8fa0ff;
-  --tile: #4c5fd5;
+  --bg: #0e0e10;
+  --panel: #17171a;
+  --panel2: #222226;
+  --line: #26262b;
+  --line2: #34343a;
+  --text: #f2f2f3;
+  --muted: #8b8b93;
+  --green: #34d399;
+  --green-bg: #10241d;
+  --green-line: #1d4536;
+  --red: #f87171;
+  --red-bg: #281416;
+  --yellow: #f5b942;
+  --yellow-bg: #29210f;
+  --blue: #e4e4e7;      /* акцент: логотип, активная вкладка */
+  --blue-soft: #a1a1aa; /* линия фундаментальной цены */
+  --tile: #2a2a2f;
   --radius: 12px;
 }
 * { box-sizing: border-box; }
@@ -42,7 +43,7 @@ button, input, select { font: inherit; color: inherit; }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .brand h1 { font-size: 18px; font-weight: 700; margin: 0; }
 .brand .sub { font-size: 12px; color: var(--muted); }
-.logo { width: 40px; height: 40px; border-radius: 10px; background: var(--blue); display: grid; place-items: center; font-size: 22px; color: #fff; flex-shrink: 0; }
+.logo { width: 40px; height: 40px; border-radius: 10px; background: var(--blue); display: grid; place-items: center; font-size: 22px; color: #111; flex-shrink: 0; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
 .tab { background: none; border: 0; padding: 10px 14px; color: var(--muted); font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; text-decoration: none; }
@@ -51,23 +52,23 @@ button, input, select { font: inherit; color: inherit; }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 10px; padding: 9px 14px; border: 1px solid var(--line2); background: transparent; cursor: pointer; font-weight: 600; font-size: 13px; white-space: nowrap; text-decoration: none; color: var(--text); }
 .btn:hover { background: var(--panel2); }
-.btn.primary { background: var(--green); color: #062a1c; border-color: var(--green); }
-.btn.primary:hover { background: #5ee6b2; }
-.btn.danger { color: var(--red); border-color: #4a2330; }
+.btn.primary { background: var(--text); color: #111; border-color: var(--text); }
+.btn.primary:hover { background: #fff; }
+.btn.danger { color: var(--red); border-color: #4a2427; }
 .btn.ghost { border-color: transparent; }
 .btn.icon { padding: 8px; }
 .btn.block { width: 100%; }
-.fav-btn.on { color: var(--yellow); border-color: #5a4518; background: var(--yellow-bg); }
+.fav-btn.on { color: var(--yellow); border-color: #5a4a1e; background: var(--yellow-bg); }
 .btn i { font-size: 17px; }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 .pad { padding: 14px 16px; }
-.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 11px; border-radius: 999px; background: var(--panel2); color: #9aa6ba; border: 0; cursor: pointer; white-space: nowrap; font-weight: 600; }
-.chip.on { background: #1f2c44; color: var(--text); }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 11px; border-radius: 999px; background: var(--panel2); color: #a1a1aa; border: 0; cursor: pointer; white-space: nowrap; font-weight: 600; }
+.chip.on { background: #34343a; color: var(--text); }
 .chip.green.on { background: var(--green-bg); color: var(--green); }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-.tile { width: 36px; height: 36px; border-radius: 9px; background: var(--tile); color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex-shrink: 0; letter-spacing: .3px; }
-.tile.crypto { background: #b8742a; }
+.tile { width: 36px; height: 36px; border-radius: 9px; background: var(--tile); color: #e4e4e7; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex-shrink: 0; letter-spacing: .3px; }
+.tile.crypto { background: #3a3226; color: #f5d9a8; }
 .tile.lg { width: 48px; height: 48px; font-size: 13px; }
 
 /* экономика и индексы */
@@ -78,12 +79,12 @@ button, input, select { font: inherit; color: inherit; }
 
 /* таблица рынка */
 .market .row { display: grid; grid-template-columns: minmax(0, 1.8fr) 1fr .7fr 1.1fr 90px minmax(0, 1fr) 28px; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); cursor: pointer; }
-.market .row:hover { background: #142033; }
+.market .row:hover { background: #1c1c20; }
 .market .row.head { cursor: default; font-size: 11px; color: var(--muted); border-top: 0; padding-top: 12px; }
 .market .row.head:hover { background: none; }
-.market .row.under { background: #0e1d1b; }
+.market .row.under { background: #13201b; }
 .market .row.alerted { background: var(--yellow-bg); }
-.market .row.selected { background: #1a2440; }
+.market .row.selected { background: #232328; }
 .sel-box.on { color: var(--blue-soft); }
 .order-btns { display: flex; gap: 4px; }
 .order-btns .btn { padding: 5px; }
@@ -123,7 +124,7 @@ h3 { font-size: 13px; margin: 14px 0 8px; color: var(--muted); font-weight: 600;
 .alloc { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 4px 0 14px; background: var(--panel2); }
 
 /* модальные окна */
-.overlay { position: fixed; inset: 0; background: rgba(3, 6, 12, .72); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 12px 12px; z-index: 50; overflow-y: auto; }
+.overlay { position: fixed; inset: 0; background: rgba(4, 4, 6, .74); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 12px 12px; z-index: 50; overflow-y: auto; }
 .modal { width: 100%; max-width: 520px; background: var(--panel); border: 1px solid var(--line2); border-radius: 16px; padding: 18px; }
 .modal.wide { max-width: 680px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }

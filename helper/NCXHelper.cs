@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.3.0")]
 
 static class Program
 {
-    public const string Version = "1.5.2";
+    public const string Version = "1.5.3";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -468,8 +468,8 @@ class SetupForm : Form
         var wa = Screen.PrimaryScreen.WorkingArea;
         Size = new Size(Math.Min(1280, wa.Width - 80), Math.Min(860, wa.Height - 60));
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(16, 20, 28);
-        ForeColor = Color.FromArgb(230, 235, 245);
+        BackColor = Color.FromArgb(14, 14, 16);
+        ForeColor = Color.FromArgb(242, 242, 243);
         Font = new Font("Segoe UI", 10f);
         KeyPreview = true;
 
@@ -478,7 +478,7 @@ class SetupForm : Form
         {
             AutoSize = false, Width = 1200, Height = 26,
             Text = "Выбери рамку и обведи мышкой нужное место на снимке. Шапка — тикер, цена и %; карточки — показатели под графиком.",
-            ForeColor = Color.FromArgb(160, 170, 188)
+            ForeColor = Color.FromArgb(161, 161, 170)
         };
         rbHeader = new RadioButton { Text = "Шапка: тикер и цена", AutoSize = true, Checked = true, ForeColor = CHeader, Margin = new Padding(0, 6, 18, 0) };
         rbCards = new RadioButton { Text = "Карточки показателей", AutoSize = true, ForeColor = CCards, Margin = new Padding(0, 6, 18, 0) };
@@ -538,8 +538,8 @@ class SetupForm : Form
         return new Button
         {
             Text = text, AutoSize = true, Height = 34, FlatStyle = FlatStyle.Flat, Margin = new Padding(6, 0, 0, 0),
-            BackColor = primary ? Color.FromArgb(52, 211, 153) : Color.FromArgb(30, 37, 50),
-            ForeColor = primary ? Color.FromArgb(6, 40, 28) : Color.FromArgb(230, 235, 245),
+            BackColor = primary ? Color.FromArgb(242, 242, 243) : Color.FromArgb(34, 34, 38),
+            ForeColor = primary ? Color.FromArgb(17, 17, 17) : Color.FromArgb(242, 242, 243),
             Padding = new Padding(10, 0, 10, 0)
         };
     }
@@ -607,8 +607,8 @@ class Plaque : Form
     static readonly Font StrongFont = new Font("Segoe UI Semibold", 13f, GraphicsUnit.Pixel);
     static readonly Font KeyFont = new Font("Segoe UI Semibold", 11f, GraphicsUnit.Pixel);
     static readonly StringFormat Fmt = MakeFmt();
-    static readonly Color Bg = Color.FromArgb(246, 14, 18, 26), Edge = Color.FromArgb(26, 255, 255, 255),
-        Ink = Color.FromArgb(227, 233, 243), Muted = Color.FromArgb(125, 135, 153), Ghost = Color.FromArgb(16, 255, 255, 255),
+    static readonly Color Bg = Color.FromArgb(246, 23, 23, 26), Edge = Color.FromArgb(26, 255, 255, 255),
+        Ink = Color.FromArgb(242, 242, 243), Muted = Color.FromArgb(139, 139, 147), Ghost = Color.FromArgb(16, 255, 255, 255),
         GhostHi = Color.FromArgb(34, 255, 255, 255), ChipBg = Color.FromArgb(30, 255, 255, 255), PowerOn = Color.FromArgb(52, 211, 153);
 
     string text = "", key = "";
@@ -640,7 +640,7 @@ class Plaque : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(200 + M * 2, H + M * 2);
-        BackColor = Color.FromArgb(14, 18, 26);
+        BackColor = Color.FromArgb(23, 23, 26);
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         noteTimer.Tick += (s, e) => HideNote();
     }
@@ -976,7 +976,7 @@ class HelperApp : ApplicationContext
     static readonly Keys[] KeyChoices = { Keys.F5, Keys.F6, Keys.F7, Keys.F9, Keys.F10, Keys.Insert, Keys.Home, Keys.Pause };
     bool keyBusyShown;
     static readonly Color Blue = Color.FromArgb(96, 165, 250), Green = Color.FromArgb(52, 211, 153),
-        Yellow = Color.FromArgb(251, 191, 36), Red = Color.FromArgb(248, 113, 113), Gray = Color.FromArgb(120, 130, 148);
+        Yellow = Color.FromArgb(251, 191, 36), Red = Color.FromArgb(248, 113, 113), Gray = Color.FromArgb(139, 139, 147);
 
     public HelperApp()
     {
