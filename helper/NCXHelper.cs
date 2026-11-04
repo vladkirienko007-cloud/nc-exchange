@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
 
 static class Program
 {
-    public const string Version = "1.4";
+    public const string Version = "1.5";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -73,8 +73,7 @@ class Settings
     public bool Plaque = true;
     public bool Samples = true;
     public Keys Hotkey = Keys.F5;
-    public bool On = true;
-    public int Style;                            // вид панели: Plaque.Styles                       // кнопка включения на панели
+    public bool On = true;                       // кнопка включения на панели
     public Point PanelAt = new Point(-1, -1);    // где панель относительно окна игры (-1 — сверху по центру)
     static readonly string[] BaseOrigins = { "https://vladkirienko007-cloud.github.io", "http://localhost:8765", "http://127.0.0.1:8765" };
     public List<string> Origins = new List<string>(BaseOrigins);
@@ -124,7 +123,6 @@ class Settings
                 else if (k == "samples") s.Samples = v != "0";
                 else if (k == "key") { Keys key; if (Enum.TryParse(v, out key)) s.Hotkey = key; }
                 else if (k == "on") s.On = v != "0";
-                else if (k == "style") { int st; if (int.TryParse(v, out st) && st >= 0 && st < global::Plaque.Styles.Length) s.Style = st; }
                 else if (k == "panel")
                 {
                     var xy = v.Split(',');
@@ -145,7 +143,7 @@ class Settings
             Directory.CreateDirectory(Dir);
             var lines = new List<string> {
                 "cardsOn=" + (CardsOn ? 1 : 0), "sound=" + (Sound ? 1 : 0), "plaque=" + (Plaque ? 1 : 0),
-                "samples=" + (Samples ? 1 : 0), "key=" + Hotkey, "on=" + (On ? 1 : 0), "style=" + Style, "panel=" + PanelAt.X + "," + PanelAt.Y };
+                "samples=" + (Samples ? 1 : 0), "key=" + Hotkey, "on=" + (On ? 1 : 0), "panel=" + PanelAt.X + "," + PanelAt.Y };
             foreach (var kv in PerRes)
                 lines.Add("frames." + kv.Key + "=" + R(kv.Value.Header) + ";" + R(kv.Value.Cards) + (kv.Value.Manual ? ";manual" : ""));
             lines.Add("# свой адрес сайта (если ссылка сменится): origin=https://...");
@@ -655,41 +653,57 @@ class SetupForm : Form
 
 /* ---------------- плашка состояния поверх игры ---------------- */
 
-// Панель поверх окна игры — всё в одном: состояние помощника, кнопка снимка, кнопка
-// включения и итог последнего снимка (раскрывается вниз и сама сворачивается).
-// Перетаскивается за любое место кроме кнопок, место запоминается.
-// Не забирает фокус у игры и не попадает на снимки.
+// Панель «Остров» поверх окна игры — всё в одном: состояние помощника, клавиша снимка,
+// кнопки «снять» и «вкл/выкл», а после снимка на несколько секунд его итог прямо в строке.
+// Рисуется с попиксельной прозрачностью (гладкие края и тень), перетаскивается за любое
+// место кроме кнопок, место запоминается. Не забирает фокус у игры и не попадает на снимки.
 class Plaque : Form
 {
-    public static readonly string[] Styles = { "Классика", "Капсула", "Неон" };
+    [StructLayout(LayoutKind.Sequential)] struct SIZE { public int W, H; }
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, IntPtr ptDst, ref SIZE size, IntPtr src, ref POINT ptSrc, int key, ref BLEND blend, int flags);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+
+    // размеры в пикселях — одинаково при любом масштабе Windows
+    const int M = 10;          // поле под тень
+    const int H = 32;          // высота капсулы
+    const int Btn = 24;        // круглые кнопки
+    const int Gap = 8;
+    const int MaxNote = 520;   // самая широкая строка итога
+
+    static readonly Font StatusFont = new Font("Segoe UI", 13f, GraphicsUnit.Pixel);
+    static readonly Font StrongFont = new Font("Segoe UI Semibold", 13f, GraphicsUnit.Pixel);
+    static readonly Font KeyFont = new Font("Segoe UI Semibold", 11f, GraphicsUnit.Pixel);
+    static readonly StringFormat Fmt = MakeFmt();
+    static readonly Color Bg = Color.FromArgb(236, 14, 18, 26), Edge = Color.FromArgb(26, 255, 255, 255),
+        Ink = Color.FromArgb(227, 233, 243), Muted = Color.FromArgb(125, 135, 153), Ghost = Color.FromArgb(16, 255, 255, 255),
+        GhostHi = Color.FromArgb(34, 255, 255, 255), ChipBg = Color.FromArgb(30, 255, 255, 255), PowerOn = Color.FromArgb(52, 211, 153);
 
     string text = "", key = "";
     Color dot = Color.Gray;
     bool on = true;
-    int style;
     Rectangle game;
     Point at = new Point(-1, -1);       // относительно окна игры
     bool dragging, moved;
     Point grab;
     int hover = -1;                     // 0 — снять, 1 — вкл/выкл
+    int pillW;
+    RectangleF chip;
     Rectangle snapBtn, powerBtn;
-    int barH = 32, textX;
 
-    // итог снимка под строкой состояния
+    // итог снимка: заменяет строку состояния на несколько секунд
     string noteTitle, noteText;
     Color noteColor;
-    RectangleF noteTitleR, noteTextR;
     readonly System.Windows.Forms.Timer noteTimer = new System.Windows.Forms.Timer();
 
     public event Action SnapClicked, PowerClicked, MenuRequested;
     public event Action<Point> Moved;
-
-    static readonly Font TextFont = new Font("Segoe UI Semibold", 9f);
-    static readonly Font BtnFont = new Font("Segoe UI Semibold", 8.5f);
-    static readonly Font NoteTitleFont = new Font("Segoe UI Semibold", 10f);
-    static readonly Font NoteFont = new Font("Segoe UI", 9f);
-    static readonly Color Bg = Color.FromArgb(18, 22, 31), Line = Color.FromArgb(48, 56, 72),
-        Ink = Color.FromArgb(225, 232, 244), Muted = Color.FromArgb(150, 160, 178), BtnBg = Color.FromArgb(32, 37, 48);
 
     public Plaque()
     {
@@ -697,11 +711,17 @@ class Plaque : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Bg;
-        Size = new Size(360, 32);
-        Opacity = 0.94;
-        DoubleBuffered = true;
+        Size = new Size(200 + M * 2, H + M * 2);
         noteTimer.Tick += (s, e) => HideNote();
+    }
+
+    static StringFormat MakeFmt()
+    {
+        var f = (StringFormat)StringFormat.GenericTypographic.Clone();
+        f.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+        f.Trimming = StringTrimming.EllipsisCharacter;
+        f.LineAlignment = StringAlignment.Center;
+        return f;
     }
 
     protected override bool ShowWithoutActivation { get { return true; } }
@@ -711,12 +731,13 @@ class Plaque : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x08 | 0x80 | 0x08000000; // поверх, без панели задач, не активируется (игра остаётся в фокусе)
+            // поверх, без панели задач, попиксельная прозрачность, не активируется (игра остаётся в фокусе)
+            cp.ExStyle |= 0x08 | 0x80 | 0x80000 | 0x08000000;
             return cp;
         }
     }
 
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); Redraw(); }
 
     // клик по окну без активации: игра не теряет фокус, иначе снимок не сделать
     protected override void WndProc(ref Message m)
@@ -729,7 +750,9 @@ class Plaque : Form
 
     public void Notify(string t, string s, Color c, int ms)
     {
-        noteTitle = t; noteText = s; noteColor = c;
+        noteTitle = t ?? ""; noteText = s ?? ""; noteColor = c;
+        // подпись идёт в той же строке после заголовка — со строчной буквы
+        if (noteText.Length > 1 && char.IsUpper(noteText[0]) && !char.IsUpper(noteText[1])) noteText = char.ToLower(noteText[0]) + noteText.Substring(1);
         noteTimer.Stop();
         noteTimer.Interval = ms;
         noteTimer.Start();
@@ -744,61 +767,54 @@ class Plaque : Form
         Relayout();
     }
 
-    public void Set(string t, Color c, Rectangle g, string k, bool isOn, Point rel, int st)
+    public void Set(string t, Color c, Rectangle g, string k, bool isOn, Point rel)
     {
-        bool changed = t != text || c != dot || k != key || isOn != on || st != style || g != game;
-        text = t; dot = c; key = k; on = isOn; game = g; style = st;
+        bool changed = t != text || c != dot || k != key || isOn != on || g != game;
+        text = t; dot = c; key = k; on = isOn; game = g;
         if (!dragging) at = rel;
         if (changed) Relayout();
         else Place();
-        if (!Visible) Show();
+        if (!Visible) { Show(); Redraw(); }
     }
 
+    static float Measure(Graphics g, string s, Font f) { return string.IsNullOrEmpty(s) ? 0 : g.MeasureString(s, f, 10000, Fmt).Width; }
+
+    // ширина капсулы: [точка/значок] [текст] [клавиша] [камера] [питание]
     void Relayout()
     {
-        barH = style == 1 ? 30 : style == 2 ? 36 : 32;
-        textX = style == 1 ? 30 : 38;
-        int tw, snapW;
-        using (var gr = CreateGraphics())
+        int x = 14 + 8 + Gap + 2; // отступ, точка, зазор
+        using (var bmp = new Bitmap(1, 1))
+        using (var g = Graphics.FromImage(bmp))
         {
-            tw = (int)gr.MeasureString(text, TextFont).Width;
-            snapW = style == 0 ? (int)gr.MeasureString("Снять · " + key, BtnFont).Width + 18
-                               : 22 + (int)gr.MeasureString(key, BtnFont).Width + 14;
-        }
-        int pad = style == 1 ? 3 : 4, pw = style == 1 ? 26 : 30;
-        int w = textX + tw + 10 + snapW + 6 + pw + pad + (style == 1 ? 4 : 0);
-        snapBtn = new Rectangle(textX + tw + 10, pad, snapW, barH - pad * 2);
-        powerBtn = new Rectangle(snapBtn.Right + 6, pad, pw, barH - pad * 2);
-        int h = barH;
-        if (HasNote)
-        {
-            // под уведомление панель расширяется, кнопки уходят к правому краю
-            w = Math.Max(w, 380);
-            int shift = w - (powerBtn.Right + pad + (style == 1 ? 4 : 0));
-            snapBtn.Offset(shift, 0); powerBtn.Offset(shift, 0);
-            float lx = style == 2 ? 20 : 16;
-            using (var gr = CreateGraphics())
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            if (HasNote)
             {
-                float th = gr.MeasureString(noteTitle, NoteTitleFont, (int)(w - lx - 12)).Height;
-                float sh = string.IsNullOrEmpty(noteText) ? 0 : gr.MeasureString(noteText, NoteFont, (int)(w - lx - 12)).Height;
-                noteTitleR = new RectangleF(lx, barH + 8, w - lx - 12, th);
-                noteTextR = new RectangleF(lx, barH + 8 + th, w - lx - 12, sh);
-                h = (int)(barH + 8 + th + sh + 10);
+                x = 6 + 20 + Gap;    // значок итога крупнее точки
+                float tw = Measure(g, noteTitle, StrongFont) + (noteText.Length > 0 ? 10 + Measure(g, noteText, StatusFont) : 0);
+                x += (int)Math.Ceiling(Math.Min(tw, MaxNote));
+            }
+            else
+            {
+                x += (int)Math.Ceiling(Measure(g, text, StatusFont));
+                float kw = Measure(g, key, KeyFont) + 12;
+                chip = new RectangleF(M + x + Gap, M + (H - 18) / 2f, kw, 18);
+                x += Gap + (int)Math.Ceiling(kw);
             }
         }
-        if (Size != new Size(w, h)) Size = new Size(w, h);
-        // «Капсула» — скруглённые края
-        if (style == 1)
-            using (var path = Round(new Rectangle(0, 0, w, h), HasNote ? 16 : h)) Region = new Region(path);
-        else if (Region != null) Region = null;
-        Invalidate();
+        snapBtn = new Rectangle(M + x + Gap, M + (H - Btn) / 2, Btn, Btn);
+        powerBtn = new Rectangle(snapBtn.Right + 4, snapBtn.Top, Btn, Btn);
+        pillW = powerBtn.Right + 4 - M;
+        var size = new Size(pillW + M * 2, H + M * 2);
+        if (Size != size) Size = size;
         Place();
+        Redraw();
     }
 
     void Place()
     {
         if (dragging || game.IsEmpty) return;
-        var p = at.X < 0 ? new Point(game.Left + (game.Width - Width) / 2, game.Top + 8) : new Point(game.Left + at.X, game.Top + at.Y);
+        // точка «at» — левый верхний угол капсулы (без поля под тень)
+        var p = at.X < 0 ? new Point(game.Left + (game.Width - pillW) / 2 - M, game.Top + 8 - M) : new Point(game.Left + at.X - M, game.Top + at.Y - M);
         p = Clamp(p);
         if (Location != p) Location = p;
     }
@@ -806,7 +822,7 @@ class Plaque : Form
     Point Clamp(Point p)
     {
         if (game.IsEmpty) return p;
-        return new Point(Math.Max(game.Left, Math.Min(p.X, game.Right - Width)), Math.Max(game.Top, Math.Min(p.Y, game.Bottom - Height)));
+        return new Point(Math.Max(game.Left - M, Math.Min(p.X, game.Right - pillW - M)), Math.Max(game.Top - M, Math.Min(p.Y, game.Bottom - H - M)));
     }
 
     int Hit(Point p) { return snapBtn.Contains(p) ? 0 : powerBtn.Contains(p) ? 1 : -1; }
@@ -829,11 +845,11 @@ class Plaque : Form
             return;
         }
         int h = Hit(e.Location);
-        if (h != hover) { hover = h; Invalidate(); }
+        if (h != hover) { hover = h; Redraw(); }
         Cursor = h >= 0 ? Cursors.Hand : Cursors.SizeAll;
     }
 
-    protected override void OnMouseLeave(EventArgs e) { if (hover != -1) { hover = -1; Invalidate(); } }
+    protected override void OnMouseLeave(EventArgs e) { if (hover != -1) { hover = -1; Redraw(); } }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
@@ -843,11 +859,10 @@ class Plaque : Form
             Capture = false;
             if (moved && !game.IsEmpty)
             {
-                at = new Point(Left - game.Left, Top - game.Top);
+                at = new Point(Left + M - game.Left, Top + M - game.Top);
                 if (Moved != null) Moved(at);
             }
-            // щелчок по уведомлению — убрать его
-            else if (!moved && e.Y > barH) HideNote();
+            else if (!moved && HasNote) HideNote(); // щелчок по итогу — убрать его
             return;
         }
         if (e.Button != MouseButtons.Left) return;
@@ -856,102 +871,131 @@ class Plaque : Form
         if (h == 1 && PowerClicked != null) PowerClicked();
     }
 
-    // двойной щелчок по строке состояния — панель обратно сверху по центру
+    // двойной щелчок — панель обратно сверху по центру
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
-        if (Hit(e.Location) >= 0 || e.Y > barH) return;
+        if (Hit(e.Location) >= 0) return;
         at = new Point(-1, -1);
         if (Moved != null) Moved(at);
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    void Redraw()
     {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        int cy = barH / 2;
-
-        if (style == 0)
+        if (!IsHandleCreated) return;
+        using (var bmp = Render())
         {
-            using (var pen = new Pen(Line)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-            using (var b = new SolidBrush(Color.FromArgb(70, 80, 98)))
-                for (int r = 0; r < 3; r++) for (int col = 0; col < 2; col++) g.FillEllipse(b, 8 + col * 5, cy - 7 + r * 5, 3, 3);
-            using (var b = new SolidBrush(dot)) g.FillEllipse(b, 22, cy - 5, 10, 10);
-        }
-        else if (style == 1)
-        {
-            using (var b = new SolidBrush(dot)) g.FillEllipse(b, 12, cy - 5, 10, 10);
-        }
-        else
-        {
-            // «Неон»: рамка и полоса слева цветом состояния
-            using (var pen = new Pen(Color.FromArgb(150, dot))) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-            using (var b = new SolidBrush(dot)) g.FillRectangle(b, 0, 0, 4, barH);
-            using (var b = new SolidBrush(Color.FromArgb(60, dot))) g.FillEllipse(b, 15, cy - 9, 18, 18);
-            using (var b = new SolidBrush(dot)) g.FillEllipse(b, 19, cy - 5, 10, 10);
-        }
-        using (var b = new SolidBrush(on ? Ink : Color.FromArgb(130, 140, 158)))
-        using (var sf = new StringFormat { LineAlignment = StringAlignment.Center })
-            g.DrawString(text, TextFont, b, new RectangleF(textX, 0, snapBtn.Left - textX, barH), sf);
-
-        // кнопка снимка
-        var accent = style == 2 ? Color.FromArgb(16, 185, 129) : Color.FromArgb(37, 99, 235);
-        var accentHi = style == 2 ? Color.FromArgb(52, 211, 153) : Color.FromArgb(59, 130, 246);
-        Fill(g, snapBtn, !on ? BtnBg : hover == 0 ? accentHi : accent, style == 1 ? snapBtn.Height : 8);
-        var ink = on ? (style == 2 ? Color.FromArgb(6, 30, 22) : Color.White) : Color.FromArgb(100, 110, 128);
-        if (style == 0)
-            using (var b = new SolidBrush(ink))
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString("Снять · " + key, BtnFont, b, snapBtn, sf);
-        else
-        {
-            Camera(g, snapBtn.Left + 9, snapBtn.Top + snapBtn.Height / 2f, ink);
-            using (var b = new SolidBrush(ink))
-            using (var sf = new StringFormat { LineAlignment = StringAlignment.Center })
-                g.DrawString(key, BtnFont, b, new RectangleF(snapBtn.Left + 25, snapBtn.Top, snapBtn.Width - 25, snapBtn.Height), sf);
-        }
-
-        // вкл/выкл: значок питания
-        var pw = on ? Color.FromArgb(52, 211, 153) : Color.FromArgb(120, 130, 148);
-        Fill(g, powerBtn, hover == 1 ? Line : BtnBg, style == 1 ? powerBtn.Height : 8);
-        float px = powerBtn.Left + powerBtn.Width / 2f, py = powerBtn.Top + powerBtn.Height / 2f + 0.5f;
-        using (var pen = new Pen(pw, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-        {
-            g.DrawArc(pen, px - 6, py - 6, 12, 12, -60, 300);
-            g.DrawLine(pen, px, py - 8, px, py - 1);
-        }
-
-        if (!HasNote) return;
-        using (var pen = new Pen(Line)) g.DrawLine(pen, style == 1 ? 14 : 1, barH, Width - (style == 1 ? 15 : 2), barH);
-        using (var b = new SolidBrush(noteColor))
-        {
-            if (style == 2) g.FillRectangle(b, 0, barH, 4, Height - barH);
-            else g.FillRectangle(b, noteTitleR.Left - 8, noteTitleR.Top + 3, 3, noteTitleR.Height + noteTextR.Height - 6);
-        }
-        using (var b = new SolidBrush(style == 2 ? noteColor : Ink)) g.DrawString(noteTitle, NoteTitleFont, b, noteTitleR);
-        if (!string.IsNullOrEmpty(noteText))
-            using (var b = new SolidBrush(Muted)) g.DrawString(noteText, NoteFont, b, noteTextR);
-    }
-
-    static void Camera(Graphics g, float x, float cy, Color c)
-    {
-        using (var pen = new Pen(c, 1.5f))
-        {
-            using (var body = Round(new Rectangle((int)x, (int)(cy - 5), 13, 10), 4)) g.DrawPath(pen, body);
-            g.DrawEllipse(pen, x + 4, cy - 2.5f, 5, 5);
-            g.DrawLine(pen, x + 4, cy - 6.5f, x + 8, cy - 6.5f);
+            IntPtr screen = GetDC(IntPtr.Zero), mem = CreateCompatibleDC(screen);
+            IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(mem, hbm);
+            var size = new SIZE { W = bmp.Width, H = bmp.Height };
+            var src = new POINT();
+            var blend = new BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 1 /* AC_SRC_ALPHA */ };
+            UpdateLayeredWindow(Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2 /* ULW_ALPHA */);
+            SelectObject(mem, old);
+            DeleteObject(hbm);
+            DeleteDC(mem);
+            ReleaseDC(IntPtr.Zero, screen);
         }
     }
 
-    static void Fill(Graphics g, Rectangle r, Color c, int d)
+    public Bitmap Render()
     {
-        using (var path = Round(r, d))
-        using (var b = new SolidBrush(c)) g.FillPath(b, path);
+        var bmp = new Bitmap(pillW + M * 2, H + M * 2, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+            g.Clear(Color.Transparent);
+            var pill = new RectangleF(M, M, pillW, H);
+
+            // мягкая тень: несколько полупрозрачных капсул, чуть ниже основной
+            for (int i = M - 1; i >= 1; i--)
+                using (var p = Pill(new RectangleF(pill.X - i * 0.6f, pill.Y - i * 0.6f + 2, pill.Width + i * 1.2f, pill.Height + i * 1.2f)))
+                using (var b = new SolidBrush(Color.FromArgb(9, 0, 0, 0))) g.FillPath(b, p);
+
+            using (var p = Pill(pill))
+            {
+                using (var b = new SolidBrush(Bg)) g.FillPath(b, p);
+            }
+            using (var p = Pill(new RectangleF(pill.X + 0.5f, pill.Y + 0.5f, pill.Width - 1, pill.Height - 1)))
+            using (var pen = new Pen(Edge, 1f)) g.DrawPath(pen, p);
+
+            float cy = M + H / 2f;
+            if (HasNote)
+            {
+                // значок итога: ✓ сохранено, ! проверить, × ошибка, • прочее
+                var ic = new RectangleF(M + 6, cy - 10, 20, 20);
+                using (var b = new SolidBrush(Color.FromArgb(42, noteColor))) g.FillEllipse(b, ic);
+                Glyph(g, ic, noteColor);
+                float x = ic.Right + Gap, right = snapBtn.Left - Gap;
+                float tw = Math.Min(g.MeasureString(noteTitle, StrongFont, 10000, Fmt).Width, right - x);
+                using (var b = new SolidBrush(Ink)) g.DrawString(noteTitle, StrongFont, b, new RectangleF(x, M, tw + 1, H), Fmt);
+                if (noteText.Length > 0 && right - (x + tw + 10) > 30)
+                    using (var b = new SolidBrush(Muted)) g.DrawString(noteText, StatusFont, b, new RectangleF(x + tw + 10, M, right - (x + tw + 10), H), Fmt);
+            }
+            else
+            {
+                // точка состояния с мягким ореолом
+                float dx = M + 14 + 4;
+                using (var b = new SolidBrush(Color.FromArgb(48, dot))) g.FillEllipse(b, dx - 8, cy - 8, 16, 16);
+                using (var b = new SolidBrush(dot)) g.FillEllipse(b, dx - 4, cy - 4, 8, 8);
+                float x = M + 14 + 8 + Gap + 2;
+                using (var b = new SolidBrush(on ? Ink : Muted))
+                    g.DrawString(text, StatusFont, b, new RectangleF(x, M, chip.Left - Gap - x + 2, H), Fmt);
+                // клавиша снимка — «кнопкой клавиатуры»
+                using (var p = Round(chip, 5))
+                using (var b = new SolidBrush(ChipBg)) g.FillPath(b, p);
+                using (var b = new SolidBrush(on ? Ink : Muted))
+                using (var f = (StringFormat)Fmt.Clone())
+                {
+                    f.Alignment = StringAlignment.Center;
+                    g.DrawString(key, KeyFont, b, chip, f);
+                }
+            }
+
+            // камера
+            using (var b = new SolidBrush(hover == 0 && on ? GhostHi : Ghost)) g.FillEllipse(b, snapBtn);
+            Camera(g, snapBtn, on ? Ink : Muted);
+            // питание
+            using (var b = new SolidBrush(hover == 1 ? GhostHi : Ghost)) g.FillEllipse(b, powerBtn);
+            float px = powerBtn.Left + Btn / 2f, py = powerBtn.Top + Btn / 2f + 0.5f;
+            using (var pen = new Pen(on ? PowerOn : Muted, 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawArc(pen, px - 5.5f, py - 5.5f, 11, 11, -55, 290);
+                g.DrawLine(pen, px, py - 7.5f, px, py - 1.5f);
+            }
+        }
+        return bmp;
     }
 
-    static GraphicsPath Round(Rectangle r, int d)
+    void Glyph(Graphics g, RectangleF r, Color c)
     {
-        d = Math.Min(d, Math.Min(r.Width, r.Height));
+        float cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+        using (var pen = new Pen(c, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+        {
+            if (c.G > 180 && c.R < 120) g.DrawLines(pen, new[] { new PointF(cx - 4, cy + 0.5f), new PointF(cx - 1, cy + 3.5f), new PointF(cx + 4.5f, cy - 3) });
+            else if (c.R > 240 && c.G > 150) { g.DrawLine(pen, cx, cy - 4.5f, cx, cy + 1); using (var b = new SolidBrush(c)) g.FillEllipse(b, cx - 1.2f, cy + 3, 2.4f, 2.4f); }
+            else if (c.R > 240) { g.DrawLine(pen, cx - 3.5f, cy - 3.5f, cx + 3.5f, cy + 3.5f); g.DrawLine(pen, cx + 3.5f, cy - 3.5f, cx - 3.5f, cy + 3.5f); }
+            else using (var b = new SolidBrush(c)) g.FillEllipse(b, cx - 2.5f, cy - 2.5f, 5, 5);
+        }
+    }
+
+    static void Camera(Graphics g, Rectangle r, Color c)
+    {
+        float cx = r.Left + r.Width / 2f, cy = r.Top + r.Height / 2f + 0.5f;
+        using (var pen = new Pen(c, 1.4f) { LineJoin = LineJoin.Round })
+        {
+            using (var body = Round(new RectangleF(cx - 6.5f, cy - 4.5f, 13, 9), 2.5f)) g.DrawPath(pen, body);
+            g.DrawEllipse(pen, cx - 2.3f, cy - 2.3f, 4.6f, 4.6f);
+            g.DrawLine(pen, cx - 2.5f, cy - 6.3f, cx + 2.5f, cy - 6.3f);
+        }
+    }
+
+    static GraphicsPath Pill(RectangleF r) { return Round(r, r.Height / 2); }
+
+    static GraphicsPath Round(RectangleF r, float rad)
+    {
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
         var path = new GraphicsPath();
         path.AddArc(r.Left, r.Top, d, d, 180, 90);
         path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
@@ -974,7 +1018,7 @@ class HelperApp : ApplicationContext
     readonly Toast toast = new Toast();
     readonly Plaque plaque = new Plaque();
     readonly HotkeyWindow hk;
-    readonly ToolStripMenuItem statusItem, onItem, snapItem, keyMenu, styleMenu, soundItem, plaqueItem, samplesItem;
+    readonly ToolStripMenuItem statusItem, onItem, snapItem, keyMenu, soundItem, plaqueItem, samplesItem;
     readonly ContextMenuStrip menu;
     readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer { Interval = 250 };
     Bitmap lastFull;
@@ -1013,12 +1057,6 @@ class HelperApp : ApplicationContext
             var key = k;
             keyMenu.DropDownItems.Add(new ToolStripMenuItem(k.ToString(), null, (s, e) => SetKey(key)));
         }
-        styleMenu = new ToolStripMenuItem("Вид панели");
-        for (int i = 0; i < Plaque.Styles.Length; i++)
-        {
-            int st = i;
-            styleMenu.DropDownItems.Add(new ToolStripMenuItem(Plaque.Styles[i], null, (s, e) => { settings.Style = st; settings.Save(); RefreshMenu(); }));
-        }
         soundItem = new ToolStripMenuItem("Звук снимка", null, (s, e) => { settings.Sound = !settings.Sound; settings.Save(); RefreshMenu(); });
         plaqueItem = new ToolStripMenuItem("Панель поверх игры", null, (s, e) => { settings.Plaque = !settings.Plaque; settings.Save(); RefreshMenu(); });
         samplesItem = new ToolStripMenuItem("Сохранять снимки для обучения", null, (s, e) => { settings.Samples = !settings.Samples; settings.Save(); RefreshMenu(); });
@@ -1026,7 +1064,7 @@ class HelperApp : ApplicationContext
             statusItem, new ToolStripSeparator(), onItem, snapItem,
             new ToolStripMenuItem("Найти рамки заново (автоматически)", null, (s, e) => Recalibrate()),
             new ToolStripMenuItem("Настроить рамки вручную…", null, (s, e) => Setup()),
-            keyMenu, styleMenu, soundItem, plaqueItem, samplesItem,
+            keyMenu, soundItem, plaqueItem, samplesItem,
             new ToolStripMenuItem("Папка снимков для обучения", null, (s, e) => OpenSamples()),
             new ToolStripSeparator(),
             new ToolStripMenuItem("Открыть сайт биржи", null, (s, e) => OpenSite()),
@@ -1094,7 +1132,7 @@ class HelperApp : ApplicationContext
             }
         }
         if (!settings.Plaque || !inGame) { if (plaque.Visible) { plaque.HideNote(); plaque.Hide(); } return; }
-        if (!settings.On) { plaque.Set("NCX · выключен", Gray, game, settings.Hotkey.ToString(), false, settings.PanelAt, settings.Style); return; }
+        if (!settings.On) { plaque.Set("выключен", Gray, game, settings.Hotkey.ToString(), false, settings.PanelAt); return; }
 
         var f = CurrentFrames(game.Size);
         bool same = false;
@@ -1115,15 +1153,15 @@ class HelperApp : ApplicationContext
 
         string text; Color c;
         int waiting = sent.Count + bridge.Pending;
-        if (bridge.PortError) { text = "NCX · не запустился: порт занят"; c = Red; }
-        else if (!bridge.SiteConnected) { text = "NCX · открой сайт биржи на этом ПК"; c = Yellow; }
-        else if (sent.Values.Any(x => x.Calib)) { text = "NCX · настраиваю рамки под твой экран…"; c = Blue; }
-        else if (waiting > 0) { text = "NCX · распознаю… (" + waiting + ") ~" + Math.Round(avgSec * waiting) + " с"; c = Blue; }
-        else if (f == null) { text = "NCX · первый снимок настроит рамки"; c = Green; }
-        else if (!stable) { text = "NCX · экран меняется…"; c = Gray; }
-        else if (same) { text = "NCX · эта акция уже снята"; c = Gray; }
-        else { text = "NCX · можно снимать"; c = Green; }
-        plaque.Set(text, c, game, settings.Hotkey.ToString(), true, settings.PanelAt, settings.Style);
+        if (bridge.PortError) { text = "порт занят"; c = Red; }
+        else if (!bridge.SiteConnected) { text = "открой сайт биржи"; c = Yellow; }
+        else if (sent.Values.Any(x => x.Calib)) { text = "настраиваю рамки…"; c = Blue; }
+        else if (waiting > 0) { text = (waiting > 1 ? "распознаю " + waiting + " · ~" : "распознаю · ~") + Math.Round(avgSec * waiting) + " с"; c = Blue; }
+        else if (f == null) { text = "готово"; c = Green; }
+        else if (!stable) { text = "экран меняется…"; c = Gray; }
+        else if (same) { text = "уже снята"; c = Gray; }
+        else { text = "готово"; c = Green; }
+        plaque.Set(text, c, game, settings.Hotkey.ToString(), true, settings.PanelAt);
     }
 
     void RefreshMenu()
@@ -1139,7 +1177,6 @@ class HelperApp : ApplicationContext
         plaqueItem.Checked = settings.Plaque;
         samplesItem.Checked = settings.Samples;
         foreach (ToolStripMenuItem i in keyMenu.DropDownItems) i.Checked = i.Text == settings.Hotkey.ToString();
-        for (int i = 0; i < styleMenu.DropDownItems.Count; i++) ((ToolStripMenuItem)styleMenu.DropDownItems[i]).Checked = i == settings.Style;
     }
 
     void SetKey(Keys k)
