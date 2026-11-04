@@ -20,6 +20,9 @@ export function compact(n) {
   return money(n);
 }
 
+// Число для поля ввода: с запятой, без пробелов между разрядами
+export const inputNum = v => v == null || !isFinite(v) ? '' : String(v).replace('.', ',');
+
 export function plain(n, d = 2) {
   return n == null || !isFinite(n) ? '—' : nf(d).format(n);
 }

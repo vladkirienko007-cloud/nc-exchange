@@ -245,7 +245,7 @@ function viewAsset(t) {
         <div class="stats">
           ${a.type === 'crypto' ? `
           <div class="stat"><div class="lbl">В обращении</div><div class="val num">${U.plain(a.circulating, 0)}</div>${a.maxSupply ? `<div class="small muted">из ${U.plain(a.maxSupply, 0)}</div>` : ''}</div>
-          <div class="stat"><div class="lbl">Активность сети</div><div class="val num up">${a.activity != null ? U.pct(a.activity, false) : '—'}</div>${a.adoption != null ? `<div class="small muted">базовое принятие ${U.pct(a.adoption, false)}</div>` : ''}</div>
+          <div class="stat"><div class="lbl">Активность сети</div><div class="val num up">${a.activity != null ? U.plain(a.activity, 1) + '%' : '—'}</div>${a.adoption != null ? `<div class="small muted">базовое принятие ${U.plain(a.adoption, 1)}%</div>` : ''}</div>
           <div class="stat"><div class="lbl">Рыночный риск</div><div class="val num">${a.risk != null ? U.pct(a.risk, false) : '—'}</div>${a.orderFlow != null ? `<div class="small muted">поток заявок ${U.pct(a.orderFlow, false)}</div>` : ''}</div>` : `
           <div class="stat"><div class="lbl">Фундаментальная цена</div><div class="val num">${U.money(a.fundamental)}</div>${d != null ? `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'рынок ниже на ' + U.pct(d, false) : 'рынок выше на ' + U.pct(-d, false)}</div>` : ''}</div>
           <div class="stat"><div class="lbl">Выручка</div><div class="val num">${U.compact(a.revenue)}</div></div>
@@ -258,7 +258,7 @@ function viewAsset(t) {
           <i class="ti ti-star"></i>${S.favs.has(t) ? 'В избранном — убрать' : 'Добавить в избранное'}</button>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
           <button class="btn" data-act="price-one" data-t="${esc(t)}"><i class="ti ti-edit"></i>Новая цена</button>
-          <button class="btn" data-act="edit-asset" data-t="${esc(t)}"><i class="ti ti-building"></i>Данные компании</button>
+          <button class="btn" data-act="edit-asset" data-t="${esc(t)}"><i class="ti ${a.type === 'crypto' ? 'ti-coin' : 'ti-building'}"></i>${a.type === 'crypto' ? 'Данные монеты' : 'Данные компании'}</button>
           ${isOwner() ? `<button class="btn danger" data-act="delete-asset" data-t="${esc(t)}"><i class="ti ti-trash"></i>Удалить</button>` : ''}
         </div>
       </div>
@@ -275,7 +275,7 @@ function viewAsset(t) {
         <div style="display:flex;gap:8px;margin-top:12px">
           <button class="btn primary" data-act="trade" data-t="${esc(t)}" data-side="buy">Купил</button>
           <button class="btn" data-act="trade" data-t="${esc(t)}" data-side="sell">Продал</button>
-          <button class="btn" data-act="trade" data-t="${esc(t)}" data-side="div">Дивиденды</button>
+          ${a.type === 'crypto' ? '' : `<button class="btn" data-act="trade" data-t="${esc(t)}" data-side="div">Дивиденды</button>`}
         </div>
       </div>
       <div class="panel pad" style="margin-top:14px">
@@ -318,12 +318,13 @@ function mountChart() {
   const up = pts[pts.length - 1].price >= pts[0].price;
   const col = up ? 'var(--green)' : 'var(--red)';
   const fy = U.hasFund(a) ? Y(a.fundamental) : null;
+  const hi = Math.max(...pts.map(p => p.price)), lo = Math.min(...pts.map(p => p.price));
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}">
     <polygon fill="${col}" fill-opacity=".12" points="${X(t0)},${H - P.b} ${line} ${X(t1)},${H - P.b}"/>
     <polyline fill="none" stroke="${col}" stroke-width="2" points="${line}"/>
     ${fy != null ? `<line x1="0" x2="${W}" y1="${fy}" y2="${fy}" stroke="var(--blue-soft)" stroke-dasharray="5 5"/><text x="6" y="${fy - 6}" fill="var(--blue-soft)" font-size="11">фундаментальная ${U.money(a.fundamental)}</text>` : ''}
-    <text x="${W - 4}" y="12" text-anchor="end" fill="var(--muted)" font-size="11">${U.money(Math.max(...pts.map(p => p.price)))}</text>
-    <text x="${W - 4}" y="${H - 6}" text-anchor="end" fill="var(--muted)" font-size="11">${U.money(Math.min(...pts.map(p => p.price)))}</text>
+    <text x="${W - 4}" y="${Math.max(12, Y(hi) - 6)}" text-anchor="end" fill="var(--muted)" font-size="11">${U.money(hi)}</text>
+    ${U.money(lo) !== U.money(hi) ? `<text x="${W - 4}" y="${Math.min(H - 6, Y(lo) + 15)}" text-anchor="end" fill="var(--muted)" font-size="11">${U.money(lo)}</text>` : ''}
     <text x="4" y="${H - 6}" fill="var(--muted)" font-size="11">${U.dateTime(t0)}</text>
     <line id="cx" x1="0" x2="0" y1="${P.t}" y2="${H - P.b}" stroke="var(--line2)" visibility="hidden"/>
     <circle id="cd" r="4" fill="${col}" visibility="hidden"/>
@@ -660,8 +661,8 @@ function openPriceOne(t) {
 function openEditAsset(t) {
   const a = S.assets.find(x => x.ticker === t);
   const dv = a.dividend || {};
-  const f = (id, label, v) => `<div class="field"><label>${label}</label><input class="input num" inputmode="decimal" id="${id}" value="${v ?? ''}"></div>`;
-  const close = modal(`Данные компании · ${esc(t)}`, `
+  const f = (id, label, v) => `<div class="field"><label>${label}</label><input class="input num" inputmode="decimal" id="${id}" value="${U.inputNum(v)}"></div>`;
+  const close = modal(`${a.type === 'crypto' ? 'Данные монеты' : 'Данные компании'} · ${esc(t)}`, `
     <div class="row2"><div class="field"><label>Название</label><input class="input" id="e-name" value="${esc(a.name)}"></div>
     <div class="field"><label>Тип</label><select class="input" id="e-type"><option value="stock" ${a.type !== 'crypto' ? 'selected' : ''}>Акции</option><option value="crypto" ${a.type === 'crypto' ? 'selected' : ''}>Крипто</option></select></div></div>
     ${a.type === 'crypto' ? `
@@ -708,7 +709,7 @@ function openTrade(t, side = 'buy') {
   const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
   const close = modal('Сделка', `
     <div class="seg"><button data-side="buy" class="buy">Покупка</button><button data-side="sell" class="sell">Продажа</button><button data-side="div">Дивиденды</button></div>
-    <div class="field"><label>Актив</label><select class="input" id="t-asset">${assets.map(a => `<option value="${esc(a.ticker)}" ${a.ticker === t ? 'selected' : ''}>${esc(a.ticker)} · ${esc(a.name)}</option>`).join('')}</select></div>
+    <div class="field"><label>Актив</label><select class="input" id="t-asset">${assets.map(a => `<option value="${esc(a.ticker)}" data-type="${a.type}" ${a.ticker === t ? 'selected' : ''}>${esc(a.ticker)} · ${esc(a.name)}</option>`).join('')}</select></div>
     <div class="row2">
       <div class="field"><label id="t-qty-l">Количество</label><input class="input num" inputmode="numeric" id="t-qty" placeholder="0"></div>
       <div class="field"><label id="t-price-l">Цена за штуку</label><input class="input num" inputmode="decimal" id="t-price"></div>
@@ -728,20 +729,24 @@ function openTrade(t, side = 'buy') {
     el('t-fee-f').classList.toggle('hidden', s === 'div');
     el('t-qty-l').textContent = s === 'div' ? 'Акций на руках' : 'Количество';
     el('t-price-l').textContent = s === 'div' ? 'Дивиденд на акцию' : 'Цена за штуку';
+    // у крипты дивидендов нет
+    const sel = el('t-asset');
+    [...sel.options].forEach(o => { o.hidden = s === 'div' && o.dataset.type === 'crypto'; });
+    if (sel.selectedOptions[0]?.hidden) { const o = [...sel.options].find(o => !o.hidden); if (o) sel.value = o.value; }
     fillPrice();
   };
   const fillPrice = () => {
     const a = S.assets.find(x => x.ticker === el('t-asset').value);
     if (side === 'div') {
-      el('t-price').value = a?.dividend?.perShare ?? '';
+      el('t-price').value = U.inputNum(a?.dividend?.perShare);
       const pos = U.buildPortfolio(S.trades.filter(x => x.ticker === a.ticker), S.assets).positions[0];
       if (pos && !el('t-qty').value) el('t-qty').value = Math.round(pos.qty);
-    } else el('t-price').value = a?.price ?? '';
+    } else el('t-price').value = U.inputNum(a?.price);
     calc();
   };
   const calc = () => {
     const q = U.parseNum(el('t-qty').value) || 0, p = U.parseNum(el('t-price').value) || 0;
-    if (!feeTouched) el('t-fee').value = side === 'div' || !q ? '' : (q * p * U.COMMISSION).toFixed(2);
+    if (!feeTouched) el('t-fee').value = side === 'div' || !q ? '' : U.inputNum(+(q * p * U.COMMISSION).toFixed(2));
     const fee = U.parseNum(el('t-fee').value) || 0;
     const sum = q * p;
     el('t-calc').innerHTML = side === 'div'
@@ -780,8 +785,8 @@ function openAlert(t) {
   const close = modal(`Сигнал · ${esc(t)}`, `
     <div class="hint" style="margin-bottom:12px">Сейчас ${U.money(a.price)}. Когда кто-то внесёт цену за уровнем, придёт уведомление.</div>
     <div class="row2">
-      <div class="field"><label>Цена ниже</label><input class="input num" inputmode="decimal" id="a-below" value="${al.below ?? ''}"></div>
-      <div class="field"><label>Цена выше</label><input class="input num" inputmode="decimal" id="a-above" value="${al.above ?? ''}"></div>
+      <div class="field"><label>Цена ниже</label><input class="input num" inputmode="decimal" id="a-below" value="${U.inputNum(al.below)}"></div>
+      <div class="field"><label>Цена выше</label><input class="input num" inputmode="decimal" id="a-above" value="${U.inputNum(al.above)}"></div>
     </div>
     <div style="display:flex;gap:8px;justify-content:space-between">
       ${S.alerts[t] ? '<button class="btn danger" data-del>Убрать</button>' : '<span></span>'}
