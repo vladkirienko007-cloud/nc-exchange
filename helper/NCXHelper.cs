@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.5.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.4.0")]
 
 static class Program
 {
-    public const string Version = "1.5.3";
+    public const string Version = "1.5.4";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -74,7 +74,7 @@ class Settings
     public bool Samples = true;
     public Keys Hotkey = Keys.F5;
     public bool On = true;                       // кнопка включения на панели
-    public Point PanelAt = new Point(-1, -1);    // где панель относительно окна игры (-1 — сверху по центру)
+    public Point PanelAt = new Point(-1, -1);    // центр верхнего края панели относительно окна игры (-1 — сверху по центру)
     static readonly string[] BaseOrigins = { "https://vladkirienko007-cloud.github.io", "http://localhost:8765", "http://127.0.0.1:8765" };
     public List<string> Origins = new List<string>(BaseOrigins);
 
@@ -123,7 +123,7 @@ class Settings
                 else if (k == "samples") s.Samples = v != "0";
                 else if (k == "key") { Keys key; if (Enum.TryParse(v, out key)) s.Hotkey = key; }
                 else if (k == "on") s.On = v != "0";
-                else if (k == "panel")
+                else if (k == "panelc")
                 {
                     var xy = v.Split(',');
                     int x, y;
@@ -143,7 +143,7 @@ class Settings
             Directory.CreateDirectory(Dir);
             var lines = new List<string> {
                 "cardsOn=" + (CardsOn ? 1 : 0), "sound=" + (Sound ? 1 : 0), "plaque=" + (Plaque ? 1 : 0),
-                "samples=" + (Samples ? 1 : 0), "key=" + Hotkey, "on=" + (On ? 1 : 0), "panel=" + PanelAt.X + "," + PanelAt.Y };
+                "samples=" + (Samples ? 1 : 0), "key=" + Hotkey, "on=" + (On ? 1 : 0), "panelc=" + PanelAt.X + "," + PanelAt.Y };
             foreach (var kv in PerRes)
                 lines.Add("frames." + kv.Key + "=" + R(kv.Value.Header) + ";" + R(kv.Value.Cards) + (kv.Value.Manual ? ";manual" : ""));
             lines.Add("# свой адрес сайта (если ссылка сменится): origin=https://...");
@@ -615,7 +615,7 @@ class Plaque : Form
     Color dot = Color.Gray;
     bool on = true;
     Rectangle game;
-    Point at = new Point(-1, -1);       // относительно окна игры
+    Point at = new Point(-1, -1);       // центр верхнего края капсулы относительно окна игры
     bool dragging, moved;
     Point grab;
     int hover = -1;                     // 0 — снять, 1 — вкл/выкл
@@ -678,6 +678,14 @@ class Plaque : Form
 
     public bool HasNote { get { return noteTitle != null; } }
 
+    // На время скриншота панель прячется: не все программы снимков слушаются защиты окна
+    DateTime suppressUntil = DateTime.MinValue;
+    public void Suppress(int ms)
+    {
+        suppressUntil = DateTime.Now.AddMilliseconds(ms);
+        if (Visible) Hide();
+    }
+
     public void Notify(string t, string s, Color c, int ms)
     {
         noteTitle = t ?? ""; noteText = s ?? ""; noteColor = c;
@@ -702,6 +710,7 @@ class Plaque : Form
         bool changed = t != text || c != dot || k != key || isOn != on || g != game;
         text = t; dot = c; key = k; on = isOn; game = g;
         if (!dragging) at = rel;
+        if (DateTime.Now < suppressUntil) return;
         if (changed) Relayout();
         else Place();
         if (!Visible) Show();
@@ -749,8 +758,9 @@ class Plaque : Form
     void Place()
     {
         if (dragging || game.IsEmpty) return;
-        // точка «at» — левый верхний угол капсулы (без поля под тень)
-        var p = at.X < 0 ? new Point(game.Left + (game.Width - pillW) / 2 - M, game.Top + 8 - M) : new Point(game.Left + at.X - M, game.Top + at.Y - M);
+        // от центра: при смене ширины капсула раздвигается в обе стороны поровну
+        int cx = at.X < 0 ? game.Width / 2 : at.X, top = at.X < 0 ? 8 : at.Y;
+        var p = new Point(game.Left + cx - pillW / 2 - M, game.Top + top - M);
         p = Clamp(p);
         if (Location != p) Location = p;
     }
@@ -795,7 +805,7 @@ class Plaque : Form
             Capture = false;
             if (moved && !game.IsEmpty)
             {
-                at = new Point(Left + M - game.Left, Top + M - game.Top);
+                at = new Point(Left + M + pillW / 2 - game.Left, Top + M - game.Top);
                 if (Moved != null) Moved(at);
             }
             else if (!moved && HasNote) HideNote(); // щелчок по итогу — убрать его
@@ -958,6 +968,7 @@ class HelperApp : ApplicationContext
     readonly NotifyIcon tray;
     readonly Plaque plaque = new Plaque();
     readonly HotkeyWindow hk;
+    readonly ScreenshotGuard guard;
     readonly ToolStripMenuItem statusItem, onItem, snapItem, keyMenu, soundItem, plaqueItem, samplesItem;
     readonly ContextMenuStrip menu;
     readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer { Interval = 250 };
@@ -1022,6 +1033,7 @@ class HelperApp : ApplicationContext
 
         // клавиша занята помощником, только пока открыта игра: F5 в браузере и других
         // программах работает как обычно
+        guard = new ScreenshotGuard(ms => plaque.Suppress(ms));
         hk = new HotkeyWindow();
         hk.Pressed += Snap;
 
@@ -1368,10 +1380,79 @@ class HelperApp : ApplicationContext
     void Quit()
     {
         hk.Unregister();
+        guard.Dispose();
         tray.Visible = false;
         ExitThread();
         Environment.Exit(0);
     }
+}
+
+// Клавиши скриншота (PrtSc, Alt/Win+PrtSc, Win+Shift+S): нажатие придерживаем, прячем
+// панель и через мгновение повторяем ту же клавишу — снимок делается уже без панели.
+class ScreenshotGuard : IDisposable
+{
+    delegate IntPtr HookProc(int code, IntPtr w, IntPtr l);
+    [StructLayout(LayoutKind.Sequential)] struct KB { public uint Vk, Scan, Flags, Time; public IntPtr Extra; }
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, HookProc fn, IntPtr mod, uint thread);
+    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int code, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vk);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
+
+    const int VK_SNAPSHOT = 0x2C, VK_S = 0x53;
+    static readonly UIntPtr Mine = (UIntPtr)0x4E4358; // метка своих повторных нажатий
+    readonly HookProc proc;                           // держим ссылку, иначе сборщик мусора уберёт
+    readonly IntPtr hook;
+    readonly Action<int> hide;
+    int held;                                         // какую клавишу придержали (её отпускание тоже глотаем)
+
+    public ScreenshotGuard(Action<int> hide)
+    {
+        this.hide = hide;
+        proc = Proc;
+        hook = SetWindowsHookEx(13 /* WH_KEYBOARD_LL */, proc, GetModuleHandle(null), 0);
+    }
+
+    static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+    IntPtr Proc(int code, IntPtr w, IntPtr l)
+    {
+        if (code >= 0)
+        {
+            var k = (KB)Marshal.PtrToStructure(l, typeof(KB));
+            bool down = w == (IntPtr)0x100 || w == (IntPtr)0x104, up = w == (IntPtr)0x101 || w == (IntPtr)0x105;
+            if ((ulong)k.Extra != (ulong)Mine)
+            {
+                int vk = (int)k.Vk;
+                bool snip = vk == VK_S && (Down(0x5B) || Down(0x5C)) && Down(0x10);
+                if (down && (vk == VK_SNAPSHOT || snip))
+                {
+                    hide(vk == VK_S ? 2500 : 1500);
+                    held = vk;
+                    var t = new System.Windows.Forms.Timer { Interval = 50 }; // кадр без панели успевает дойти до экрана
+                    t.Tick += (s, e) =>
+                    {
+                        t.Stop(); t.Dispose();
+                        // Win+Shift+S: если Win или Shift уже отпустили — нажимаем их сами, иначе в игру уйдёт просто «s»
+                        bool win = snip && !Down(0x5B) && !Down(0x5C), shift = snip && !Down(0x10);
+                        if (win) keybd_event(0x5B, 0, 0, Mine);
+                        if (shift) keybd_event(0x10, 0, 0, Mine);
+                        keybd_event((byte)vk, (byte)k.Scan, 0, Mine);
+                        keybd_event((byte)vk, (byte)k.Scan, 2 /* KEYUP */, Mine);
+                        if (shift) keybd_event(0x10, 0, 2, Mine);
+                        if (win) keybd_event(0x5B, 0, 2, Mine);
+                    };
+                    t.Start();
+                    return (IntPtr)1;
+                }
+                if (up && vk == held) { held = 0; return (IntPtr)1; }
+            }
+        }
+        return CallNextHookEx(hook, code, w, l);
+    }
+
+    public void Dispose() { if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook); }
 }
 
 class HotkeyWindow : NativeWindow
