@@ -21,12 +21,12 @@ using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("NC Exchange помощник")]
 [assembly: System.Reflection.AssemblyProduct("NC Exchange помощник")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.2.0")]
 
 static class Program
 {
-    public const string Version = "1.5";
+    public const string Version = "1.5.2";
     public const string Site = "https://vladkirienko007-cloud.github.io/nc-exchange/#/helper";
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -439,71 +439,6 @@ class Bridge
     }
 }
 
-/* ---------------- уведомление поверх игры ---------------- */
-
-class Toast : Form
-{
-    readonly System.Windows.Forms.Timer hide = new System.Windows.Forms.Timer();
-    string title = "", text = "";
-    Color accent = Color.FromArgb(96, 165, 250);
-
-    public Toast()
-    {
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        TopMost = true;
-        StartPosition = FormStartPosition.Manual;
-        BackColor = Color.FromArgb(22, 27, 38);
-        Size = new Size(380, 74);
-        DoubleBuffered = true;
-        hide.Tick += (s, e) => { hide.Stop(); Hide(); };
-        Click += (s, e) => Hide();
-    }
-
-    protected override bool ShowWithoutActivation { get { return true; } }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= 0x08 | 0x80 | 0x08000000; // поверх всех, без кнопки в панели задач, не забирает фокус у игры
-            return cp;
-        }
-    }
-
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); }
-
-    public void Pop(string t, string s, Color c, int ms)
-    {
-        title = t; text = s; accent = c;
-        var game = Game.ClientOnScreen(Game.Window());
-        var area = game.IsEmpty ? Screen.PrimaryScreen.WorkingArea : game;
-        Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + 44);
-        Invalidate();
-        if (!Visible) Show();
-        hide.Stop();
-        hide.Interval = ms;
-        hide.Start();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        using (var pen = new Pen(Color.FromArgb(48, 56, 72))) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-        using (var b = new SolidBrush(accent)) g.FillRectangle(b, 0, 0, 5, Height);
-        using (var b = new SolidBrush(accent)) g.FillEllipse(b, 20, 27, 18, 18);
-        using (var f = new Font("Segoe UI Semibold", 11f))
-        using (var b = new SolidBrush(Color.FromArgb(235, 240, 248)))
-            g.DrawString(title, f, b, new RectangleF(50, 12, Width - 60, 24));
-        using (var f = new Font("Segoe UI", 9.5f))
-        using (var b = new SolidBrush(Color.FromArgb(150, 160, 178)))
-            g.DrawString(text, f, b, new RectangleF(50, 38, Width - 60, 32));
-    }
-}
-
 /* ---------------- настройка рамок ---------------- */
 
 class SetupForm : Form
@@ -655,33 +590,24 @@ class SetupForm : Form
 
 // Панель «Остров» поверх окна игры — всё в одном: состояние помощника, клавиша снимка,
 // кнопки «снять» и «вкл/выкл», а после снимка на несколько секунд его итог прямо в строке.
-// Рисуется с попиксельной прозрачностью (гладкие края и тень), перетаскивается за любое
-// место кроме кнопок, место запоминается. Не забирает фокус у игры и не попадает на снимки.
+// Перетаскивается за любое место кроме кнопок, место запоминается. Не забирает фокус у игры.
+// Окно непрозрачное и обрезано по форме капсулы: только такое Windows 10 позволяет спрятать
+// от снимков и записи экрана (полупрозрачное — нет). Гладкие края — подмешиваем к ним то,
+// что под панелью: её саму захват экрана не видит.
 class Plaque : Form
 {
-    [StructLayout(LayoutKind.Sequential)] struct SIZE { public int W, H; }
-    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
-    [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte Op, Flags, Alpha, Format; }
-    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, IntPtr ptDst, ref SIZE size, IntPtr src, ref POINT ptSrc, int key, ref BLEND blend, int flags);
-    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
-    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-    [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
-    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
-
     // размеры в пикселях — одинаково при любом масштабе Windows
-    const int M = 10;          // поле под тень
+    const int M = 1;           // запас под сглаженный край
     const int H = 32;          // высота капсулы
     const int Btn = 24;        // круглые кнопки
     const int Gap = 8;
-    const int MaxNote = 520;   // самая широкая строка итога
+    const int MaxNote = 600;   // самая широкая строка итога
 
     static readonly Font StatusFont = new Font("Segoe UI", 13f, GraphicsUnit.Pixel);
     static readonly Font StrongFont = new Font("Segoe UI Semibold", 13f, GraphicsUnit.Pixel);
     static readonly Font KeyFont = new Font("Segoe UI Semibold", 11f, GraphicsUnit.Pixel);
     static readonly StringFormat Fmt = MakeFmt();
-    static readonly Color Bg = Color.FromArgb(236, 14, 18, 26), Edge = Color.FromArgb(26, 255, 255, 255),
+    static readonly Color Bg = Color.FromArgb(246, 14, 18, 26), Edge = Color.FromArgb(26, 255, 255, 255),
         Ink = Color.FromArgb(227, 233, 243), Muted = Color.FromArgb(125, 135, 153), Ghost = Color.FromArgb(16, 255, 255, 255),
         GhostHi = Color.FromArgb(34, 255, 255, 255), ChipBg = Color.FromArgb(30, 255, 255, 255), PowerOn = Color.FromArgb(52, 211, 153);
 
@@ -696,6 +622,8 @@ class Plaque : Form
     int pillW;
     RectangleF chip;
     Rectangle snapBtn, powerBtn;
+    bool hidden;                        // окно спрятано от снимков экрана
+    Bitmap backdrop;                    // что под панелью — для сглаженных краёв
 
     // итог снимка: заменяет строку состояния на несколько секунд
     string noteTitle, noteText;
@@ -712,6 +640,8 @@ class Plaque : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(200 + M * 2, H + M * 2);
+        BackColor = Color.FromArgb(14, 18, 26);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         noteTimer.Tick += (s, e) => HideNote();
     }
 
@@ -731,13 +661,13 @@ class Plaque : Form
         get
         {
             var cp = base.CreateParams;
-            // поверх, без панели задач, попиксельная прозрачность, не активируется (игра остаётся в фокусе)
-            cp.ExStyle |= 0x08 | 0x80 | 0x80000 | 0x08000000;
+            // поверх, без панели задач, не активируется (игра остаётся в фокусе)
+            cp.ExStyle |= 0x08 | 0x80 | 0x08000000;
             return cp;
         }
     }
 
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Game.HideFromCapture(Handle); Redraw(); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); hidden = Game.HideFromCapture(Handle); }
 
     // клик по окну без активации: игра не теряет фокус, иначе снимок не сделать
     protected override void WndProc(ref Message m)
@@ -774,7 +704,8 @@ class Plaque : Form
         if (!dragging) at = rel;
         if (changed) Relayout();
         else Place();
-        if (!Visible) { Show(); Redraw(); }
+        if (!Visible) Show();
+        RefreshBackdrop(); // зовётся каждые 250 мс — края успевают за картинкой игры
     }
 
     static float Measure(Graphics g, string s, Font f) { return string.IsNullOrEmpty(s) ? 0 : g.MeasureString(s, f, 10000, Fmt).Width; }
@@ -805,8 +736,13 @@ class Plaque : Form
         powerBtn = new Rectangle(snapBtn.Right + 4, snapBtn.Top, Btn, Btn);
         pillW = powerBtn.Right + 4 - M;
         var size = new Size(pillW + M * 2, H + M * 2);
-        if (Size != size) Size = size;
+        if (Size != size)
+        {
+            Size = size;
+            using (var path = Pill(new RectangleF(M - 0.5f, M - 0.5f, pillW + 1, H + 1))) Region = new Region(path);
+        }
         Place();
+        RefreshBackdrop();
         Redraw();
     }
 
@@ -841,7 +777,7 @@ class Plaque : Form
         if (dragging)
         {
             var p = Clamp(new Point(Cursor.Position.X - grab.X, Cursor.Position.Y - grab.Y));
-            if (p != Location) { Location = p; moved = true; }
+            if (p != Location) { Location = p; moved = true; RefreshBackdrop(); }
             return;
         }
         int h = Hit(e.Location);
@@ -879,22 +815,32 @@ class Plaque : Form
         if (Moved != null) Moved(at);
     }
 
-    void Redraw()
+    void Redraw() { if (pillW > 0) Invalidate(); }
+
+    // Снять то, что под панелью (саму панель захват не видит). Если спрятать окно от снимков
+    // не вышло, на снимке была бы сама панель — тогда края просто на тёмном фоне.
+    public void RefreshBackdrop()
     {
-        if (!IsHandleCreated) return;
-        using (var bmp = Render())
+        if (!hidden || !Visible || pillW <= 0) return;
+        try
         {
-            IntPtr screen = GetDC(IntPtr.Zero), mem = CreateCompatibleDC(screen);
-            IntPtr hbm = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(mem, hbm);
-            var size = new SIZE { W = bmp.Width, H = bmp.Height };
-            var src = new POINT();
-            var blend = new BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 1 /* AC_SRC_ALPHA */ };
-            UpdateLayeredWindow(Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2 /* ULW_ALPHA */);
-            SelectObject(mem, old);
-            DeleteObject(hbm);
-            DeleteDC(mem);
-            ReleaseDC(IntPtr.Zero, screen);
+            var b = new Bitmap(Width, Height, PixelFormat.Format32bppRgb);
+            using (var g = Graphics.FromImage(b)) g.CopyFromScreen(Location, Point.Empty, Size);
+            if (backdrop != null) backdrop.Dispose();
+            backdrop = b;
+            Invalidate();
         }
+        catch { }
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        if (pillW <= 0) return;
+        if (backdrop != null && backdrop.Size == Size) e.Graphics.DrawImageUnscaled(backdrop, 0, 0);
+        else e.Graphics.Clear(BackColor);
+        using (var bmp = Render()) e.Graphics.DrawImageUnscaled(bmp, 0, 0);
     }
 
     public Bitmap Render()
@@ -907,11 +853,6 @@ class Plaque : Form
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
             g.Clear(Color.Transparent);
             var pill = new RectangleF(M, M, pillW, H);
-
-            // мягкая тень: несколько полупрозрачных капсул, чуть ниже основной
-            for (int i = M - 1; i >= 1; i--)
-                using (var p = Pill(new RectangleF(pill.X - i * 0.6f, pill.Y - i * 0.6f + 2, pill.Width + i * 1.2f, pill.Height + i * 1.2f)))
-                using (var b = new SolidBrush(Color.FromArgb(9, 0, 0, 0))) g.FillPath(b, p);
 
             using (var p = Pill(pill))
             {
@@ -1015,7 +956,6 @@ class HelperApp : ApplicationContext
     readonly Settings settings = Settings.Load();
     readonly Bridge bridge;
     readonly NotifyIcon tray;
-    readonly Toast toast = new Toast();
     readonly Plaque plaque = new Plaque();
     readonly HotkeyWindow hk;
     readonly ToolStripMenuItem statusItem, onItem, snapItem, keyMenu, soundItem, plaqueItem, samplesItem;
@@ -1040,10 +980,10 @@ class HelperApp : ApplicationContext
 
     public HelperApp()
     {
-        toast.CreateControl();
-        var h = toast.Handle; // окно уведомлений нужно создать в UI-потоке заранее — через него идут BeginInvoke
+        plaque.CreateControl();
+        var h = plaque.Handle; // окно панели нужно создать в UI-потоке заранее — через него идут BeginInvoke
         bridge = new Bridge(settings);
-        bridge.Result += r => toast.BeginInvoke((Action)(() => OnResult(r)));
+        bridge.Result += r => plaque.BeginInvoke((Action)(() => OnResult(r)));
         bridge.Sample += r => SaveSample(r);
         bridge.Start();
 
@@ -1094,15 +1034,20 @@ class HelperApp : ApplicationContext
         tick.Start();
 
         if (bridge.Error != null) Pop("Помощник не запустился", bridge.Error, Red, 10000);
-        else Pop("Помощник " + Program.Version + " запущен", "Открой биржу в игре, выбери акцию и нажми " + settings.Hotkey + " или «Снять» на панели", Blue, 6000);
+        else Pop("Помощник " + Program.Version + " запущен", "в игре открой акцию на бирже и жми " + settings.Hotkey, Blue, 6000);
         RefreshMenu();
     }
 
-    // Итог снимка и прочие сообщения — в панели, если она на экране; иначе отдельным окошком
+    // Итог снимка и прочие сообщения — в панели. Если игра не на экране, панель на время
+    // сообщения появляется сверху по центру (окна игры или экрана) и потом снова прячется
     void Pop(string t, string s, Color c, int ms)
     {
-        if (plaque.Visible) { toast.Hide(); plaque.Notify(t, s, c, ms); }
-        else toast.Pop(t, s, c, ms);
+        plaque.Notify(t, s, c, ms);
+        if (plaque.Visible) return;
+        var game = Game.ClientOnScreen(Game.Window());
+        bool hasGame = !game.IsEmpty;
+        plaque.Set("готово", Green, hasGame ? game : Screen.PrimaryScreen.WorkingArea, settings.Hotkey.ToString(), settings.On,
+            hasGame ? settings.PanelAt : new Point(-1, -1));
     }
 
     Frames CurrentFrames(Size s)
@@ -1120,7 +1065,7 @@ class HelperApp : ApplicationContext
         var w = Game.Window();
         var game = Game.ClientOnScreen(w);
         var fg = GetForegroundWindow();
-        bool inGame = !game.IsEmpty && (fg == w || fg == toast.Handle || fg == plaque.Handle);
+        bool inGame = !game.IsEmpty && (fg == w || fg == plaque.Handle);
         bool wantKey = inGame && settings.On;
         if (wantKey != hk.Registered)
         {
@@ -1128,10 +1073,11 @@ class HelperApp : ApplicationContext
             else if (!hk.Register(settings.Hotkey) && !keyBusyShown)
             {
                 keyBusyShown = true;
-                Pop("Клавиша " + settings.Hotkey + " занята", "Её держит другая программа. Снимай кнопкой на панели или выбери другую клавишу: правый клик по панели → Горячая клавиша", Yellow, 9000);
+                Pop("Клавиша " + settings.Hotkey + " занята", "снимай кнопкой-камерой или смени клавишу: правый клик", Yellow, 9000);
             }
         }
-        if (!settings.Plaque || !inGame) { if (plaque.Visible) { plaque.HideNote(); plaque.Hide(); } return; }
+        // вне игры панель видна, только пока показывает сообщение
+        if (!settings.Plaque || !inGame) { if (plaque.Visible && !plaque.HasNote) plaque.Hide(); return; }
         if (!settings.On) { plaque.Set("выключен", Gray, game, settings.Hotkey.ToString(), false, settings.PanelAt); return; }
 
         var f = CurrentFrames(game.Size);
@@ -1281,7 +1227,7 @@ class HelperApp : ApplicationContext
             if (sig != null && Game.Diff(sig, lastSnapSig) < 3 && (DateTime.Now - lastSnapAt).TotalSeconds > 3)
             {
                 lastSnapAt = DateTime.Now;
-                Pop("Эта акция уже снята", "Открой другую. Нужен ещё раз — нажми " + settings.Hotkey + " снова", Gray, 4000);
+                Pop("Эта акция уже снята", "нужен ещё раз — нажми " + settings.Hotkey + " снова", Gray, 4000);
                 full.Dispose();
                 return;
             }
@@ -1303,9 +1249,9 @@ class HelperApp : ApplicationContext
             { "width", full.Width }, { "height", full.Height }, { "calibrate", calib }, { "images", images } });
 
         if (!bridge.SiteConnected)
-            Pop("Снимок сохранён", "Сайт биржи не открыт — открой его, и цены отправятся (в очереди: " + bridge.Pending + ")", Yellow, 7000);
+            Pop("Снимок в очереди (" + bridge.Pending + ")", "открой сайт биржи — цены отправятся", Yellow, 7000);
         else if (calib)
-            Pop("Первый снимок на этом экране", "Сайт ищет шапку и карточки — около 10 секунд, дальше быстрее", Blue, 30000);
+            Pop("Первый снимок на этом экране", "ищу рамки, ~10 с", Blue, 30000);
         else
             Pop("Снимок сделан", "Распознаю на сайте…", Blue, 30000);
     }
@@ -1357,7 +1303,7 @@ class HelperApp : ApplicationContext
         // обычный скриншот и рамок не возвращает — без этого каждый снимок был бы целым экраном
         if (s != null && s.Calib && status != "error" && !r.ContainsKey("frames"))
         {
-            Pop("Обнови страницу сайта биржи", "Открыта старая версия сайта — нажми на ней Ctrl+F5, тогда снимки будут только нужных мест", Yellow, 12000);
+            Pop("Обнови сайт биржи", "нажми на его вкладке Ctrl+F5", Yellow, 12000);
             return;
         }
         var c = status == "ok" ? Green : status == "check" ? Yellow : Red;
@@ -1385,10 +1331,10 @@ class HelperApp : ApplicationContext
     void Recalibrate()
     {
         var game = Game.ClientOnScreen(Game.Window());
-        if (game.IsEmpty) { Pop("MTA не найдена", "Запусти игру — рамки ищутся по её окну", Yellow, 5000); return; }
+        if (game.IsEmpty) { Pop("MTA не найдена", "запусти игру", Yellow, 5000); return; }
         settings.PerRes.Remove(Settings.Key(game.Size));
         settings.Save();
-        Pop("Рамки сброшены", "Открой акцию на бирже и нажми " + settings.Hotkey + " — сайт найдёт их заново", Blue, 6000);
+        Pop("Рамки сброшены", "открой акцию и нажми " + settings.Hotkey, Blue, 6000);
     }
 
     void Setup()
