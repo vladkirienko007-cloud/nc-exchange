@@ -192,7 +192,7 @@ function assetRow(a) {
     <div class="asset-name">${tileFor(a)}<div style="min-width:0"><div class="t">${esc(a.name)}</div><div class="s">${esc(a.ticker)} · ${a.type === 'crypto' ? 'Крипто' : 'Акции'} ${S.favs.has(a.ticker) ? '<i class="ti ti-star warn"></i>' : ''}${alert ? '<i class="ti ti-bell warn"></i>' : ''}</div></div></div>
     <div class="price num c-price">${U.money(a.price)}</div>
     <div class="num c-change ${U.cls(a.change)}">${U.pct(a.change)}</div>
-    <div class="num c-fund">${a.fundamental ? U.money(a.fundamental) + `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'ниже на ' + U.pct(d, false) : 'выше на ' + U.pct(-d, false)}</div>` : '<span class="muted">—</span>'}</div>
+    <div class="num c-fund">${U.hasFund(a) ? U.money(a.fundamental) + `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'ниже на ' + U.pct(d, false) : 'выше на ' + U.pct(-d, false)}</div>` : '<span class="muted">—</span>'}</div>
     <div class="c-spark">${S.ordering
       ? `<span class="order-btns"><button class="btn icon" data-act="move" data-t="${esc(a.ticker)}" data-dir="-1" aria-label="Выше"><i class="ti ti-arrow-up"></i></button><button class="btn icon" data-act="move" data-t="${esc(a.ticker)}" data-dir="1" aria-label="Ниже"><i class="ti ti-arrow-down"></i></button></span>`
       : spark(a.spark)}</div>
@@ -243,11 +243,11 @@ function viewAsset(t) {
         <div class="chips" style="margin:12px 0 0">${rb('1h')}${rb('24h')}${rb('7d')}${rb('all')}</div>
         <div class="chart" id="chart"></div>
         <div class="stats">
-          <div class="stat"><div class="lbl">${a.type === 'crypto' ? 'Ценовой ориентир' : 'Фундаментальная цена'}</div><div class="val num">${U.money(a.fundamental)}</div>${d != null ? `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'рынок ниже на ' + U.pct(d, false) : 'рынок выше на ' + U.pct(-d, false)}</div>` : ''}</div>
           ${a.type === 'crypto' ? `
           <div class="stat"><div class="lbl">В обращении</div><div class="val num">${U.plain(a.circulating, 0)}</div>${a.maxSupply ? `<div class="small muted">из ${U.plain(a.maxSupply, 0)}</div>` : ''}</div>
           <div class="stat"><div class="lbl">Активность сети</div><div class="val num up">${a.activity != null ? U.pct(a.activity, false) : '—'}</div>${a.adoption != null ? `<div class="small muted">базовое принятие ${U.pct(a.adoption, false)}</div>` : ''}</div>
           <div class="stat"><div class="lbl">Рыночный риск</div><div class="val num">${a.risk != null ? U.pct(a.risk, false) : '—'}</div>${a.orderFlow != null ? `<div class="small muted">поток заявок ${U.pct(a.orderFlow, false)}</div>` : ''}</div>` : `
+          <div class="stat"><div class="lbl">Фундаментальная цена</div><div class="val num">${U.money(a.fundamental)}</div>${d != null ? `<div class="small ${d > 0 ? 'up' : 'muted'}">${d > 0 ? 'рынок ниже на ' + U.pct(d, false) : 'рынок выше на ' + U.pct(-d, false)}</div>` : ''}</div>
           <div class="stat"><div class="lbl">Выручка</div><div class="val num">${U.compact(a.revenue)}</div></div>
           <div class="stat"><div class="lbl">Чистая прибыль</div><div class="val num ${U.cls(a.profit)}">${U.compact(a.profit)}</div></div>
           <div class="stat"><div class="lbl">Капитал компании</div><div class="val num">${U.compact(a.capital)}</div>${a.debt ? `<div class="small muted">долг ${U.compact(a.debt)}</div>` : ''}</div>`}
@@ -307,7 +307,7 @@ function mountChart() {
   }
   const W = box.clientWidth || 600, H = box.clientHeight || 260, P = { l: 4, r: 4, t: 18, b: 22 };
   const vals = pts.map(p => p.price);
-  if (a && a.fundamental) vals.push(a.fundamental);
+  if (U.hasFund(a)) vals.push(a.fundamental);
   let min = Math.min(...vals), max = Math.max(...vals);
   const padV = (max - min) * 0.08 || max * 0.02;
   min -= padV; max += padV;
@@ -317,7 +317,7 @@ function mountChart() {
   const line = pts.map(p => `${X(p.at).toFixed(1)},${Y(p.price).toFixed(1)}`).join(' ');
   const up = pts[pts.length - 1].price >= pts[0].price;
   const col = up ? 'var(--green)' : 'var(--red)';
-  const fy = a && a.fundamental ? Y(a.fundamental) : null;
+  const fy = U.hasFund(a) ? Y(a.fundamental) : null;
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}">
     <polygon fill="${col}" fill-opacity=".12" points="${X(t0)},${H - P.b} ${line} ${X(t1)},${H - P.b}"/>
     <polyline fill="none" stroke="${col}" stroke-width="2" points="${line}"/>
@@ -665,10 +665,10 @@ function openEditAsset(t) {
     <div class="row2"><div class="field"><label>Название</label><input class="input" id="e-name" value="${esc(a.name)}"></div>
     <div class="field"><label>Тип</label><select class="input" id="e-type"><option value="stock" ${a.type !== 'crypto' ? 'selected' : ''}>Акции</option><option value="crypto" ${a.type === 'crypto' ? 'selected' : ''}>Крипто</option></select></div></div>
     ${a.type === 'crypto' ? `
-    <div class="row2">${f('e-fund', 'Ценовой ориентир', a.fundamental)}${f('e-circ', 'В обращении', a.circulating)}</div>
-    <div class="row2">${f('e-max', 'Всего монет', a.maxSupply)}${f('e-act', 'Активность сети, %', a.activity)}</div>
-    <div class="row2">${f('e-adop', 'Базовое принятие, %', a.adoption)}${f('e-risk', 'Рыночный риск, %', a.risk)}</div>
-    <div class="row2">${f('e-flow', 'Поток заявок, %', a.orderFlow)}${f('e-cyc', 'Цикл крипторынка №', a.cycle?.n)}</div>` : `
+    <div class="row2">${f('e-circ', 'В обращении', a.circulating)}${f('e-max', 'Всего монет', a.maxSupply)}</div>
+    <div class="row2">${f('e-act', 'Активность сети, %', a.activity)}${f('e-adop', 'Базовое принятие, %', a.adoption)}</div>
+    <div class="row2">${f('e-risk', 'Рыночный риск, %', a.risk)}${f('e-flow', 'Поток заявок, %', a.orderFlow)}</div>
+    ${f('e-cyc', 'Цикл крипторынка №', a.cycle?.n)}` : `
     <div class="row2">${f('e-fund', 'Фундаментальная цена', a.fundamental)}${f('e-rev', 'Выручка', a.revenue)}</div>
     <div class="row2">${f('e-prof', 'Чистая прибыль', a.profit)}${f('e-cap', 'Капитал компании', a.capital)}</div>
     ${f('e-debt', 'Долг', a.debt)}
@@ -809,7 +809,7 @@ function askNotify() {
 
 // Показатели выбранного актива в окне проверки: [поле, подпись, знаков после запятой]
 const METRICS = [
-  ['fundamental', 'Фунд. цена / ориентир', 2], ['revenue', 'Выручка', 2], ['profit', 'Чистая прибыль', 2],
+  ['fundamental', 'Фунд. цена', 2], ['revenue', 'Выручка', 2], ['profit', 'Чистая прибыль', 2],
   ['capital', 'Капитал', 2], ['debt', 'Долг', 2], ['circulating', 'В обращении', 0], ['maxSupply', 'Всего монет', 0],
   ['activity', 'Активность сети, %', 1], ['adoption', 'Базовое принятие, %', 1], ['risk', 'Рыночный риск, %', 2],
   ['orderFlow', 'Поток заявок, %', 2],

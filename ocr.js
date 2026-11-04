@@ -297,7 +297,8 @@ const CARDS = [
   // подписи карточек с большой буквы: строчные «активности», «капитала», «рыночный» есть
   // в других местах экрана
   { re: /^Фундамент/, key: 'fundamental', kind: 'money' },
-  { re: /^Ценов/, key: 'fundamental', kind: 'money' },
+  // «Ценовой ориентир» крипты = текущая цена: карточку находим (по ней ставятся рамки), но не читаем
+  { re: /^Ценов/, key: 'fundamental', kind: 'money', skip: true },
   { re: /^Выручк/, key: 'revenue', kind: 'money' },
   { re: /^Чист/, key: 'profit', kind: 'money' },
   { re: /^[KК]апитал/, key: 'capital', kind: 'money', sub: 'debt', subKind: 'money' },
@@ -557,7 +558,7 @@ async function readCards(bmp, words, s, onStep) {
   let n = 0;
   for (const f of boxes) {
     onStep(n++ / boxes.length);
-    if (!f.valBox) continue;
+    if (!f.valBox || f.skip) continue;
     let v = glyphValue(glyphCanvas(bmp, f.valBox), f.kind);
     await ew.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '$0123456789,.% ' });
     const tv = await voteBox(ew, bmp, f.valBox, f.kind, [3]);
@@ -968,8 +969,8 @@ export function parse(text, known = []) {
   let company = null;
   {
     const data = {};
-    // у крипты вместо фундаментальной цены — «Ценовой ориентир»
-    const fields = [['fundamental', /Фундамент|Ценов\S*\s*ориентир/i], ['revenue', /Выручк/i], ['profit', /прибыл/i], ['capital', /Капитал/i]];
+    // «Ценовой ориентир» у крипты — это просто текущая цена, фундаментальной у неё нет
+    const fields = [['fundamental', /Фундамент/i], ['revenue', /Выручк/i], ['profit', /прибыл/i], ['capital', /Капитал/i]];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       if (fields.some(([, re]) => re.test(l)) && !/\$/.test(l)) {

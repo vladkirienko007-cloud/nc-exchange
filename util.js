@@ -68,8 +68,10 @@ export function dateTime(at) {
 export const STALE_MS = 60 * 60e3;
 
 // Насколько рыночная цена ниже фундаментальной (в %), если ниже.
+// У крипты фундаментальной цены нет — её «Ценовой ориентир» равен текущей цене.
+export const hasFund = a => !!(a && a.type !== 'crypto' && a.fundamental);
 export function discount(a) {
-  if (!a || !a.fundamental || !a.price) return null;
+  if (!hasFund(a) || !a.price) return null;
   return (1 - a.price / a.fundamental) * 100;
 }
 
